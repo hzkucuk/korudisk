@@ -8,29 +8,41 @@ namespace KoruDisk.Web.Services;
 
 public sealed class ScheduledBackupService : BackgroundService
 {
-    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan MinPollInterval = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan MaxPollInterval = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan IdlePollInterval = TimeSpan.FromMinutes(2);
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly BackupCoordinator _backupCoordinator;
     private readonly ILogger<ScheduledBackupService> _logger;
+    private readonly bool _schedulerEnabled;
 
     public ScheduledBackupService(
         IServiceScopeFactory scopeFactory,
         BackupCoordinator backupCoordinator,
-        ILogger<ScheduledBackupService> logger)
+        ILogger<ScheduledBackupService> logger,
+        IConfiguration configuration)
     {
         _scopeFactory = scopeFactory;
         _backupCoordinator = backupCoordinator;
         _logger = logger;
+        _schedulerEnabled = configuration.GetValue<bool?>("Scheduler:Enabled") ?? true;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (!_schedulerEnabled)
+        {
+            _logger.LogInformation("Zamanlanmis yedekleme servisi konfigurasyon geregi devre disi.");
+            return;
+        }
+
         while (!stoppingToken.IsCancellationRequested)
         {
+            var nextDelay = IdlePollInterval;
             try
             {
-                await DispatchDueJobsAsync(stoppingToken);
+                nextDelay = await DispatchDueJobsAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -41,11 +53,20 @@ public sealed class ScheduledBackupService : BackgroundService
                 _logger.LogError(ex, "Zamanlanmış yedekler taranırken hata oluştu.");
             }
 
-            await Task.Delay(PollInterval, stoppingToken);
+            if (nextDelay < MinPollInterval)
+            {
+                nextDelay = MinPollInterval;
+            }
+            else if (nextDelay > MaxPollInterval)
+            {
+                nextDelay = MaxPollInterval;
+            }
+
+            await Task.Delay(nextDelay, stoppingToken);
         }
     }
 
-    private async Task DispatchDueJobsAsync(CancellationToken cancellationToken)
+    private async Task<TimeSpan> DispatchDueJobsAsync(CancellationToken cancellationToken)
     {
         using var scope = _scopeFactory.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<KoruDiskDbContext>();
@@ -70,6 +91,20 @@ public sealed class ScheduledBackupService : BackgroundService
         {
             StartScheduledJob(job.JobId, job.JobName);
         }
+
+        var nextRun = scheduledJobs
+            .Where(job => job.NextRun.HasValue)
+            .Select(job => job.NextRun!.Value)
+            .OrderBy(value => value)
+            .FirstOrDefault();
+
+        if (nextRun == default)
+        {
+            return IdlePollInterval;
+        }
+
+        var delay = nextRun - DateTime.Now;
+        return delay > TimeSpan.Zero ? delay : MinPollInterval;
     }
 
     private void StartScheduledJob(int jobId, string jobName)

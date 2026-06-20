@@ -100,7 +100,7 @@ public class DiscUtilsImageService : IDiskImageService
             {
                 using var stream = File.OpenRead(imagePath);
                 using var reader = new CDReader(stream, joliet: true);
-                return GetNodesRecursive(reader, "/");
+                return GetIsoNodes(reader);
             }
             else if (extension == ".vhd")
             {
@@ -135,10 +135,11 @@ public class DiscUtilsImageService : IDiskImageService
             {
                 var stream = File.OpenRead(imagePath);
                 var reader = new CDReader(stream, joliet: true);
-                if (reader.FileExists(virtualFilePath))
+                var resolvedPath = ResolveIsoFilePath(reader, virtualFilePath);
+                if (!string.IsNullOrWhiteSpace(resolvedPath))
                 {
                     // reader nesnesinin kapanmaması için akışı sarmalıyoruz
-                    return new CDFileStreamWrapper(reader.OpenFile(virtualFilePath, FileMode.Open, FileAccess.Read), reader, stream);
+                    return new CDFileStreamWrapper(reader.OpenFile(resolvedPath, FileMode.Open, FileAccess.Read), reader, stream);
                 }
                 reader.Dispose();
                 stream.Dispose();
@@ -422,7 +423,7 @@ public class DiscUtilsImageService : IDiskImageService
             var node = new VirtualFileNode
             {
                 Name = cleanDirName,
-                FullPath = dir.Replace("\\", "/"),
+                FullPath = NormalizeVirtualPathForDisplay(dir),
                 IsDirectory = true,
                 LastWriteTime = SafeGetLastWriteTime(fs, dir)
             };
@@ -437,7 +438,7 @@ public class DiscUtilsImageService : IDiskImageService
             list.Add(new VirtualFileNode
             {
                 Name = GetVirtualLeafName(file),
-                FullPath = file.Replace("\\", "/"),
+                FullPath = NormalizeVirtualPathForDisplay(file),
                 IsDirectory = false,
                 Size = fs.GetFileLength(file),
                 LastWriteTime = SafeGetLastWriteTime(fs, file)
@@ -499,11 +500,167 @@ public class DiscUtilsImageService : IDiskImageService
         return path.Replace('/', '\\').TrimStart('\\');
     }
 
+    private static string NormalizeIsoLookupPath(string path)
+    {
+        return path.Replace('\\', '/').Trim().TrimStart('/');
+    }
+
+    private static string? ResolveIsoFilePath(CDReader reader, string virtualFilePath)
+    {
+        if (string.IsNullOrWhiteSpace(virtualFilePath))
+        {
+            return null;
+        }
+
+        var normalized = NormalizeIsoLookupPath(virtualFilePath);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return null;
+        }
+
+        var candidates = BuildIsoLookupCandidates(normalized);
+
+        foreach (var candidate in candidates)
+        {
+            if (reader.FileExists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private List<VirtualFileNode> GetIsoNodes(CDReader reader)
+    {
+        var roots = new[] { string.Empty, "/", "\\" };
+        foreach (var root in roots)
+        {
+            try
+            {
+                var hasDirectories = reader.GetDirectories(root).Any();
+                if (hasDirectories)
+                {
+                    return GetNodesRecursive(reader, root);
+                }
+
+                var files = reader.GetFiles(root).ToList();
+                if (files.Count > 0)
+                {
+                    return BuildIsoTreeFromFilePaths(files);
+                }
+            }
+            catch
+            {
+                // Root path format differs by implementation; try fallbacks.
+            }
+        }
+
+        return new List<VirtualFileNode>();
+    }
+
+    private static IEnumerable<string> BuildIsoLookupCandidates(string normalizedPath)
+    {
+        var candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            normalizedPath,
+            "/" + normalizedPath,
+            "\\" + normalizedPath
+        };
+
+        var segments = normalizedPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length > 0)
+        {
+            var leaf = segments[^1];
+            if (!Regex.IsMatch(leaf, @";\d+$"))
+            {
+                var versionedLeaf = leaf + ";1";
+                var parent = segments.Length == 1 ? string.Empty : string.Join('/', segments.Take(segments.Length - 1));
+                var versioned = string.IsNullOrEmpty(parent) ? versionedLeaf : $"{parent}/{versionedLeaf}";
+                candidates.Add(versioned);
+                candidates.Add("/" + versioned);
+                candidates.Add("\\" + versioned);
+            }
+        }
+
+        return candidates;
+    }
+
+    private static List<VirtualFileNode> BuildIsoTreeFromFilePaths(IEnumerable<string> filePaths)
+    {
+        var roots = new List<VirtualFileNode>();
+
+        foreach (var rawPath in filePaths)
+        {
+            var normalizedPath = NormalizeVirtualPathForDisplay(rawPath);
+            var segments = normalizedPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            if (segments.Length == 0)
+            {
+                continue;
+            }
+
+            var cursor = roots;
+            var currentPath = string.Empty;
+
+            for (var index = 0; index < segments.Length; index++)
+            {
+                var segment = segments[index];
+                var isLast = index == segments.Length - 1;
+                currentPath = string.IsNullOrEmpty(currentPath) ? segment : $"{currentPath}/{segment}";
+
+                var existing = cursor.FirstOrDefault(node =>
+                    string.Equals(node.Name, segment, StringComparison.OrdinalIgnoreCase) &&
+                    node.IsDirectory == !isLast);
+
+                if (existing == null)
+                {
+                    existing = new VirtualFileNode
+                    {
+                        Name = segment,
+                        FullPath = "/" + currentPath,
+                        IsDirectory = !isLast
+                    };
+                    cursor.Add(existing);
+                }
+
+                if (!isLast)
+                {
+                    cursor = existing.Children;
+                }
+            }
+        }
+
+        return roots;
+    }
+
     private static string GetVirtualLeafName(string path)
     {
-        var normalizedPath = path.TrimEnd('\\', '/').Replace('\\', '/');
+        var normalizedPath = NormalizeVirtualPathForDisplay(path);
         var lastSeparator = normalizedPath.LastIndexOf('/');
         return lastSeparator >= 0 ? normalizedPath[(lastSeparator + 1)..] : normalizedPath;
+    }
+
+    private static string NormalizeVirtualPathForDisplay(string path)
+    {
+        var normalized = path.TrimEnd('\\', '/').Replace('\\', '/');
+        var segments = normalized
+            .Split('/', StringSplitOptions.RemoveEmptyEntries)
+            .Select(StripIsoVersionSuffix)
+            .ToArray();
+
+        return normalized.StartsWith('/')
+            ? "/" + string.Join('/', segments)
+            : string.Join('/', segments);
+    }
+
+    private static string StripIsoVersionSuffix(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return value;
+        }
+
+        return Regex.Replace(value, @";\d+$", string.Empty);
     }
 
     private static string ToFatCompatibleName(string name)

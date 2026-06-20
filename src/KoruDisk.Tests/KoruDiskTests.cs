@@ -69,6 +69,38 @@ public class KoruDiskTests : IDisposable
     }
 
     [Fact]
+    public async Task CreateIsoAndVerifyContent_ShouldCreateReadableIso()
+    {
+        var file1Path = Path.Combine(_sourceFolder, "test1.txt");
+        var subFolderPath = Path.Combine(_sourceFolder, "Sub");
+        var subFilePath = Path.Combine(subFolderPath, "subt.txt");
+
+        await File.WriteAllTextAsync(file1Path, "ISO Test Dosyasi 1");
+        Directory.CreateDirectory(subFolderPath);
+        await File.WriteAllTextAsync(subFilePath, "ISO Alt Klasor Dosyasi");
+
+        var imageService = new DiscUtilsImageService();
+        var isoPath = Path.Combine(_outputFolder, "backup.iso");
+
+        await imageService.CreateImageFromFolderAsync(_sourceFolder, isoPath, useNtfs: false, fileFilters: "*.*");
+
+        Assert.True(File.Exists(isoPath));
+
+        var nodes = await imageService.GetImageContentAsync(isoPath);
+        Assert.NotEmpty(nodes);
+        Assert.Contains(nodes, n => string.Equals(n.Name, "test1.txt", StringComparison.OrdinalIgnoreCase) && !n.IsDirectory);
+
+        var subFolderNode = nodes.FirstOrDefault(n => string.Equals(n.Name, "Sub", StringComparison.OrdinalIgnoreCase) && n.IsDirectory);
+        Assert.NotNull(subFolderNode);
+        Assert.Contains(subFolderNode.Children, n => string.Equals(n.Name, "subt.txt", StringComparison.OrdinalIgnoreCase) && !n.IsDirectory);
+
+        await using var extracted = await imageService.ExtractFileToStreamAsync(isoPath, "Sub/subt.txt");
+        using var reader = new StreamReader(extracted, Encoding.UTF8, leaveOpen: false);
+        var content = await reader.ReadToEndAsync();
+        Assert.Equal("ISO Alt Klasor Dosyasi", content);
+    }
+
+    [Fact]
     public async Task CreateIncrementalVhd_ShouldLinkToParentAndStoreDeltas()
     {
         var imageService = new DiscUtilsImageService();
