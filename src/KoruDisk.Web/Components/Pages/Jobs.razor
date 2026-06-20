@@ -122,6 +122,12 @@
                 <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 8px;">
                     Ayar anahtarı: Scheduler:Enabled
                 </div>
+
+                <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-light);">
+                    <div style="font-size: 0.78rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 6px;">En Yakın Planlı Çalışma</div>
+                    <div style="font-size: 0.9rem; color: var(--text-primary); font-weight: 600;">@GetNearestNextRunLabel()</div>
+                    <div style="font-size: 0.78rem; color: var(--text-secondary); margin-top: 4px;">@GetNearestNextRunRelativeLabel()</div>
+                </div>
             </div>
         </div>
     </div>
@@ -465,6 +471,7 @@
     private List<string> UpcomingRuns { get; set; } = new();
     private string CronValidationMessage { get; set; } = "Zamanlama seçtiğinizde bir sonraki çalışma zamanları burada görünür.";
     private bool SchedulerEnabled { get; set; } = true;
+    private DateTime? NearestNextRun { get; set; }
 
     private List<string> ParsedSourcePaths => ParseDelimitedValues(CurrentJob.SourcePaths);
     private bool CanAdvanceCurrentStep => CurrentStep switch
@@ -497,6 +504,12 @@
             .Where(d => d.IsActive)
             .OrderBy(d => d.Name)
             .ToListAsync();
+
+        NearestNextRun = BackupJobsList
+            .Where(job => job.IsActive && !string.IsNullOrWhiteSpace(job.CronExpression) && job.NextRun.HasValue)
+            .OrderBy(job => job.NextRun)
+            .Select(job => job.NextRun)
+            .FirstOrDefault();
     }
 
     private void ResetForm()
@@ -924,6 +937,57 @@
         "Custom" => "Cron ifadesini kendiniz yönetirsiniz. Geçerli 5 alanlı cron beklenir.",
         _ => "Zamanlama modu seçin."
     };
+
+    private string GetNearestNextRunLabel()
+    {
+        if (!SchedulerEnabled)
+        {
+            return "Scheduler kapalı";
+        }
+
+        if (!NearestNextRun.HasValue)
+        {
+            return "Planlı çalışma bulunamadı";
+        }
+
+        return NearestNextRun.Value.ToString("dd.MM.yyyy HH:mm", new System.Globalization.CultureInfo("tr-TR"));
+    }
+
+    private string GetNearestNextRunRelativeLabel()
+    {
+        if (!SchedulerEnabled)
+        {
+            return "Açmak için appsettings içinde Scheduler:Enabled değerini true yapın.";
+        }
+
+        if (!NearestNextRun.HasValue)
+        {
+            return "Aktif ve cron tanımlı görevler için NextRun oluştuğunda burada görünür.";
+        }
+
+        var delta = NearestNextRun.Value - DateTime.Now;
+        if (delta.TotalSeconds <= 0)
+        {
+            return "Çalıştırma zamanı geldi veya geçildi, scheduler kısa süre içinde tetikleyecek.";
+        }
+
+        if (delta.TotalMinutes < 1)
+        {
+            return "1 dakikadan az kaldı.";
+        }
+
+        if (delta.TotalHours < 1)
+        {
+            return $"Yaklaşık {(int)Math.Round(delta.TotalMinutes)} dakika kaldı.";
+        }
+
+        if (delta.TotalDays < 1)
+        {
+            return $"Yaklaşık {(int)Math.Round(delta.TotalHours)} saat kaldı.";
+        }
+
+        return $"Yaklaşık {(int)Math.Round(delta.TotalDays)} gün kaldı.";
+    }
 
     private void RefreshSchedulePreview()
     {
