@@ -25,6 +25,9 @@
 **/*.db
 **/*.db-shm
 **/*.db-wal
+src/KoruDisk.Web/korudisk/
+src/KoruDisk.Web/kodudisk/
+src/KoruDisk.Web/KoruDiskLocalBackups/
 src/KoruDisk.Web/DataProtectionKeys/
 src/KoruDisk.Web/appsettings.Development.local.json
 
