@@ -190,8 +190,18 @@ public class DiscUtilsImageService : IDiskImageService
         foreach (var file in files)
         {
             var relativePath = Path.GetRelativePath(file.mapping.SourcePath, file.file);
-            var vfsPath = CombineIsoPath(file.mapping.RootPath, relativePath);
             var fileName = Path.GetFileName(file.file);
+
+            if (fileName.StartsWith(".", StringComparison.Ordinal))
+            {
+                log?.Invoke("Info", $"ISO uyumluluğu için gizli dosya atlandı: {fileName}");
+                processed++;
+                ReportProgress(progress, processed, totalFiles);
+                continue;
+            }
+
+            var vfsPath = CombineIsoPath(file.mapping.RootPath, relativePath);
+            var safeVfsPath = ToIsoCompatiblePath(vfsPath);
 
             if (!matcher.IsMatch(fileName))
             {
@@ -216,8 +226,13 @@ public class DiscUtilsImageService : IDiskImageService
                 continue;
             }
 
-            log?.Invoke("Info", $"ISO'ya Ekleniyor: {vfsPath}");
-            builder.AddFile(vfsPath, file.file);
+            if (!string.Equals(vfsPath, safeVfsPath, StringComparison.Ordinal))
+            {
+                log?.Invoke("Info", $"ISO yol uyumluluğu için ad dönüştürüldü: {vfsPath} -> {safeVfsPath}");
+            }
+
+            log?.Invoke("Info", $"ISO'ya Ekleniyor: {safeVfsPath}");
+            builder.AddFile(safeVfsPath, file.file);
             processed++;
             ReportProgress(progress, processed, totalFiles);
         }
@@ -853,6 +868,24 @@ public class DiscUtilsImageService : IDiskImageService
         return string.IsNullOrEmpty(rootPath)
             ? normalizedRelativePath
             : $"{rootPath.Trim('/').Replace("\\", "/")}/{normalizedRelativePath}";
+    }
+
+    private static string ToIsoCompatiblePath(string path)
+    {
+        var parts = path
+            .Replace("\\", "/")
+            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        if (parts.Length == 0)
+        {
+            return "FILE";
+        }
+
+        var converted = parts
+            .Select(ToFatCompatibleName)
+            .ToArray();
+
+        return string.Join('/', converted);
     }
 
     private static string SanitizeRootFolderName(string name)
