@@ -8,6 +8,7 @@ using DiscUtils.Streams;
 using KoruDisk.Core.Interfaces;
 using KoruDisk.Core.Models;
 using System.Text.RegularExpressions;
+using System.Diagnostics;
 
 namespace KoruDisk.Infrastructure.Services;
 
@@ -172,6 +173,13 @@ public class DiscUtilsImageService : IDiskImageService
     private void CreateIso(string sourceFolder, string destPath, string filters, Action<string, string>? log, Action<double>? progress)
     {
         var sourceMappings = BuildSourceMappings(sourceFolder);
+
+        if (OperatingSystem.IsMacOS())
+        {
+            CreateIsoWithHdiutil(sourceMappings, destPath, filters, log, progress);
+            return;
+        }
+
         log?.Invoke("Info", $"ISO imajı oluşturuluyor. Kaynak sayısı: {sourceMappings.Count}");
         var builder = new CDBuilder
         {
@@ -201,7 +209,14 @@ public class DiscUtilsImageService : IDiskImageService
             }
 
             var vfsPath = CombineIsoPath(file.mapping.RootPath, relativePath);
-            var safeVfsPath = ToIsoCompatiblePath(vfsPath);
+
+            if (!IsIsoPathCompatible(vfsPath, out var incompatibilityReason))
+            {
+                log?.Invoke("Warning", $"ISO uyumluluğu için dosya atlandı: {vfsPath} ({incompatibilityReason})");
+                processed++;
+                ReportProgress(progress, processed, totalFiles);
+                continue;
+            }
 
             if (!matcher.IsMatch(fileName))
             {
@@ -226,13 +241,8 @@ public class DiscUtilsImageService : IDiskImageService
                 continue;
             }
 
-            if (!string.Equals(vfsPath, safeVfsPath, StringComparison.Ordinal))
-            {
-                log?.Invoke("Info", $"ISO yol uyumluluğu için ad dönüştürüldü: {vfsPath} -> {safeVfsPath}");
-            }
-
-            log?.Invoke("Info", $"ISO'ya Ekleniyor: {safeVfsPath}");
-            builder.AddFile(safeVfsPath, file.file);
+            log?.Invoke("Info", $"ISO'ya Ekleniyor: {vfsPath}");
+            builder.AddFile(vfsPath, file.file);
             processed++;
             ReportProgress(progress, processed, totalFiles);
         }
@@ -240,6 +250,132 @@ public class DiscUtilsImageService : IDiskImageService
         using var isoStream = File.Create(destPath);
         builder.Build(isoStream);
         log?.Invoke("Info", "ISO imajı başarıyla yazıldı.");
+    }
+
+    private void CreateIsoWithHdiutil(
+        IReadOnlyList<SourceMapping> sourceMappings,
+        string destPath,
+        string filters,
+        Action<string, string>? log,
+        Action<double>? progress)
+    {
+        log?.Invoke("Info", $"ISO imajı macOS hdiutil ile oluşturuluyor. Kaynak sayısı: {sourceMappings.Count}");
+
+        var stagingRoot = Path.Combine(Path.GetTempPath(), $"korudisk-iso-stage-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(stagingRoot);
+
+        try
+        {
+            var matcher = new FileMatcher(filters);
+            var files = sourceMappings
+                .SelectMany(mapping => Directory.GetFiles(mapping.SourcePath, "*", SearchOption.AllDirectories)
+                    .Select(file => (mapping, file)))
+                .ToList();
+
+            var totalFiles = files.Count;
+            var processed = 0;
+
+            foreach (var file in files)
+            {
+                var relativePath = Path.GetRelativePath(file.mapping.SourcePath, file.file);
+                var vfsPath = CombineIsoPath(file.mapping.RootPath, relativePath);
+                var fileName = Path.GetFileName(file.file);
+
+                if (!matcher.IsMatch(fileName))
+                {
+                    processed++;
+                    ReportProgress(progress, processed, totalFiles);
+                    continue;
+                }
+
+                if (fileName.EndsWith(".lock", StringComparison.OrdinalIgnoreCase))
+                {
+                    log?.Invoke("Warning", $"Kilit dosyası atlandı: {vfsPath}");
+                    processed++;
+                    ReportProgress(progress, processed, totalFiles);
+                    continue;
+                }
+
+                if (!CanReadFileForBackup(file.file, out var readError))
+                {
+                    log?.Invoke("Warning", $"Dosya okunamadığı için atlandı: {vfsPath} ({readError})");
+                    processed++;
+                    ReportProgress(progress, processed, totalFiles);
+                    continue;
+                }
+
+                var relativeTarget = vfsPath.Replace('/', Path.DirectorySeparatorChar);
+                var targetPath = Path.Combine(stagingRoot, relativeTarget);
+                var targetDir = Path.GetDirectoryName(targetPath);
+                if (!string.IsNullOrWhiteSpace(targetDir))
+                {
+                    Directory.CreateDirectory(targetDir);
+                }
+
+                File.Copy(file.file, targetPath, overwrite: true);
+                log?.Invoke("Info", $"ISO'ya Ekleniyor: {vfsPath}");
+                processed++;
+                ReportProgress(progress, processed, totalFiles);
+            }
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = "hdiutil",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+
+            if (File.Exists(destPath))
+            {
+                File.Delete(destPath);
+            }
+
+            startInfo.ArgumentList.Add("makehybrid");
+            startInfo.ArgumentList.Add("-o");
+            startInfo.ArgumentList.Add(destPath);
+            startInfo.ArgumentList.Add(stagingRoot);
+            startInfo.ArgumentList.Add("-iso");
+            startInfo.ArgumentList.Add("-joliet");
+            startInfo.ArgumentList.Add("-default-volume-name");
+            startInfo.ArgumentList.Add("KORUDISK");
+
+            using var process = Process.Start(startInfo) ?? throw new InvalidOperationException("hdiutil başlatılamadı.");
+            var stdOut = process.StandardOutput.ReadToEnd();
+            var stdErr = process.StandardError.ReadToEnd();
+            process.WaitForExit();
+
+            if (process.ExitCode != 0)
+            {
+                throw new InvalidOperationException($"hdiutil makehybrid başarısız oldu. Çıkış kodu: {process.ExitCode}. Hata: {stdErr}");
+            }
+
+            if (!File.Exists(destPath))
+            {
+                throw new FileNotFoundException("ISO dosyası oluşturulamadı.", destPath);
+            }
+
+            if (!string.IsNullOrWhiteSpace(stdOut))
+            {
+                log?.Invoke("Info", $"hdiutil: {stdOut.Trim()}");
+            }
+
+            log?.Invoke("Info", "ISO imajı (hdiutil) başarıyla yazıldı.");
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(stagingRoot))
+                {
+                    Directory.Delete(stagingRoot, recursive: true);
+                }
+            }
+            catch
+            {
+                // staging klasörü temizliği başarısız olsa da yedekleme akışı devam etsin
+            }
+        }
     }
 
     private static bool CanReadFileForBackup(string filePath, out string? error)
@@ -543,7 +679,49 @@ public class DiscUtilsImageService : IDiskImageService
             }
         }
 
+        var targetDisplayPath = NormalizeVirtualPathForDisplay(normalized).TrimStart('/');
+        foreach (var root in new[] { string.Empty, "/", "\\" })
+        {
+            foreach (var actualPath in EnumerateIsoFilePaths(reader, root))
+            {
+                var actualDisplayPath = NormalizeVirtualPathForDisplay(actualPath).TrimStart('/');
+                if (string.Equals(actualDisplayPath, targetDisplayPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    return actualPath;
+                }
+            }
+        }
+
         return null;
+    }
+
+    private static IEnumerable<string> EnumerateIsoFilePaths(CDReader reader, string path)
+    {
+        IEnumerable<string> files;
+        IEnumerable<string> directories;
+
+        try
+        {
+            files = reader.GetFiles(path);
+            directories = reader.GetDirectories(path);
+        }
+        catch
+        {
+            yield break;
+        }
+
+        foreach (var file in files)
+        {
+            yield return file;
+        }
+
+        foreach (var directory in directories)
+        {
+            foreach (var nestedFile in EnumerateIsoFilePaths(reader, directory))
+            {
+                yield return nestedFile;
+            }
+        }
     }
 
     private List<VirtualFileNode> GetIsoNodes(CDReader reader)
@@ -583,22 +761,37 @@ public class DiscUtilsImageService : IDiskImageService
             "\\" + normalizedPath
         };
 
-        var segments = normalizedPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        if (segments.Length > 0)
-        {
-            var leaf = segments[^1];
-            if (!Regex.IsMatch(leaf, @";\d+$"))
-            {
-                var versionedLeaf = leaf + ";1";
-                var parent = segments.Length == 1 ? string.Empty : string.Join('/', segments.Take(segments.Length - 1));
-                var versioned = string.IsNullOrEmpty(parent) ? versionedLeaf : $"{parent}/{versionedLeaf}";
-                candidates.Add(versioned);
-                candidates.Add("/" + versioned);
-                candidates.Add("\\" + versioned);
-            }
-        }
+        var upperNormalized = normalizedPath.ToUpperInvariant();
+        candidates.Add(upperNormalized);
+        candidates.Add("/" + upperNormalized);
+        candidates.Add("\\" + upperNormalized);
+
+        AddVersionedLeafCandidates(candidates, normalizedPath);
+        AddVersionedLeafCandidates(candidates, upperNormalized);
 
         return candidates;
+    }
+
+    private static void AddVersionedLeafCandidates(HashSet<string> candidates, string path)
+    {
+        var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length == 0)
+        {
+            return;
+        }
+
+        var leaf = segments[^1];
+        if (Regex.IsMatch(leaf, @";\d+$"))
+        {
+            return;
+        }
+
+        var versionedLeaf = leaf + ";1";
+        var parent = segments.Length == 1 ? string.Empty : string.Join('/', segments.Take(segments.Length - 1));
+        var versioned = string.IsNullOrEmpty(parent) ? versionedLeaf : $"{parent}/{versionedLeaf}";
+        candidates.Add(versioned);
+        candidates.Add("/" + versioned);
+        candidates.Add("\\" + versioned);
     }
 
     private static List<VirtualFileNode> BuildIsoTreeFromFilePaths(IEnumerable<string> filePaths)
@@ -870,7 +1063,7 @@ public class DiscUtilsImageService : IDiskImageService
             : $"{rootPath.Trim('/').Replace("\\", "/")}/{normalizedRelativePath}";
     }
 
-    private static string ToIsoCompatiblePath(string path)
+    private static bool IsIsoPathCompatible(string path, out string? reason)
     {
         var parts = path
             .Replace("\\", "/")
@@ -878,14 +1071,42 @@ public class DiscUtilsImageService : IDiskImageService
 
         if (parts.Length == 0)
         {
-            return "FILE";
+            reason = "boş yol";
+            return false;
         }
 
-        var converted = parts
-            .Select(ToFatCompatibleName)
-            .ToArray();
+        foreach (var segment in parts)
+        {
+            if (segment.Length > 64)
+            {
+                reason = "segment uzunluğu 64 karakteri aşıyor";
+                return false;
+            }
 
-        return string.Join('/', converted);
+            if (segment.StartsWith(".", StringComparison.Ordinal))
+            {
+                reason = "segment nokta ile başlıyor";
+                return false;
+            }
+
+            foreach (var ch in segment)
+            {
+                if (char.IsControl(ch))
+                {
+                    reason = "kontrol karakteri içeriyor";
+                    return false;
+                }
+
+                if (ch is ':' or ';' or '*' or '?' or '"' or '<' or '>' or '|')
+                {
+                    reason = $"desteklenmeyen karakter içeriyor ({ch})";
+                    return false;
+                }
+            }
+        }
+
+        reason = null;
+        return true;
     }
 
     private static string SanitizeRootFolderName(string name)
