@@ -6,6 +6,7 @@
 @using KoruDisk.Web.Components.Shared
 @using Microsoft.EntityFrameworkCore
 @inject KoruDiskDbContext DbContext
+@inject IConfiguration Configuration
 
 <PageTitle>KoruDisk - Yedekleme İşleri</PageTitle>
 
@@ -100,6 +101,26 @@
                 </div>
                 <div style="font-size: 0.84rem; color: var(--text-secondary); line-height: 1.5;">
                     Yeni görev sihirbazı ile kurulum adım adım ilerler. Çalışan işler ve anlık loglar için canlı monitör ekranını kullanabilirsiniz.
+                </div>
+            </div>
+
+            <div style="padding: 18px; border: 1px solid var(--border-light); border-radius: var(--radius-md); background: rgba(255,255,255,0.03);">
+                <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px;">
+                    <div style="font-size: 0.78rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px;">Scheduler Durumu</div>
+                    <span class="badge @(SchedulerEnabled ? "badge-success" : "badge-warning")">@(SchedulerEnabled ? "Açık" : "Kapalı")</span>
+                </div>
+                <div style="font-size: 0.85rem; color: var(--text-secondary); line-height: 1.5;">
+                    @if (SchedulerEnabled)
+                    {
+                        <span>Cron tetikleyici aktif. Planlı görevler arka planda çalıştırılır.</span>
+                    }
+                    else
+                    {
+                        <span>Scheduler kapalı. Cron tanımlı olsa bile görevler otomatik tetiklenmez.</span>
+                    }
+                </div>
+                <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 8px;">
+                    Ayar anahtarı: Scheduler:Enabled
                 </div>
             </div>
         </div>
@@ -443,6 +464,7 @@
     private int ScheduleDayOfMonth { get; set; } = 1;
     private List<string> UpcomingRuns { get; set; } = new();
     private string CronValidationMessage { get; set; } = "Zamanlama seçtiğinizde bir sonraki çalışma zamanları burada görünür.";
+    private bool SchedulerEnabled { get; set; } = true;
 
     private List<string> ParsedSourcePaths => ParseDelimitedValues(CurrentJob.SourcePaths);
     private bool CanAdvanceCurrentStep => CurrentStep switch
@@ -455,6 +477,7 @@
 
     protected override async Task OnInitializedAsync()
     {
+        SchedulerEnabled = Configuration.GetValue<bool?>("Scheduler:Enabled") ?? true;
         await ReloadDataAsync();
         ResetForm();
     }
