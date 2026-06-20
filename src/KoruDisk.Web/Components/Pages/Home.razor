@@ -1,0 +1,322 @@
+@page "/"
+@using KoruDisk.Core.Entities
+@using KoruDisk.Core.Interfaces
+@using KoruDisk.Infrastructure.Data
+@using KoruDisk.Infrastructure.Services
+@using Microsoft.EntityFrameworkCore
+@inject KoruDiskDbContext DbContext
+@inject BackupCoordinator BackupCoordinator
+@inject IServiceProvider ServiceProvider
+
+<PageTitle>KoruDisk - Gösterge Paneli</PageTitle>
+
+<h1>Gösterge Paneli</h1>
+<p class="subtitle">Yerel sanal disk yedekleme sisteminizin genel durumu.</p>
+
+<!-- Üst İstatistik Kartları -->
+<div class="grid-4" style="margin-bottom: 30px;">
+    <div class="glass-panel stat-card purple">
+        <span class="stat-title">Yedekleme İşleri</span>
+        <span class="stat-value">@TotalJobs</span>
+        <span class="stat-desc">Tanımlı aktif yedek tanımları</span>
+    </div>
+    
+    <div class="glass-panel stat-card blue">
+        <span class="stat-title">Toplam Yedekler</span>
+        <span class="stat-value">@TotalBackups</span>
+        <span class="stat-desc">Alınan başarılı yedek sayısı</span>
+    </div>
+
+    <div class="glass-panel stat-card cyan">
+        <span class="stat-title">Toplam Yedek Boyutu</span>
+        <span class="stat-value">@TotalSizeFormatted</span>
+        <span class="stat-desc">Depolama alanında kaplanan yer</span>
+    </div>
+
+    <div class="glass-panel stat-card emerald">
+        <span class="stat-title">Sistem Durumu</span>
+        <span class="stat-value" style="font-size: 1.6rem; margin-top: 5px; color: var(--accent-emerald);">ÇEVRİMİÇİ</span>
+        <span class="stat-desc">Yerel servis çalışıyor</span>
+    </div>
+</div>
+
+<!-- Aktif Çalışan Arka Plan Yedeklemeleri -->
+@if (ActiveBackups.Count > 0)
+{
+    @foreach (var active in ActiveBackups)
+    {
+        <div class="glass-panel" style="border-color: var(--accent-purple); box-shadow: var(--shadow-glow); margin-bottom: 30px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <div>
+                    <h3 style="font-weight: 700; color: var(--text-primary);">Yedekleniyor: @active.JobName</h3>
+                    <span style="font-size: 0.85rem; color: var(--accent-cyan);">@active.CurrentStep</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <button class="btn btn-danger" style="padding: 8px 12px; font-size: 0.8rem;" @onclick="() => CancelBackup(active.JobId)" disabled="@active.IsCancellationRequested">
+                        @(active.IsCancellationRequested ? "İptal Bekleniyor" : "İptal Et")
+                    </button>
+                    <div style="font-size: 1.5rem; font-weight: 700; color: var(--accent-purple);">
+                        @($"{active.Progress:0.#}%")
+                    </div>
+                </div>
+            </div>
+
+            <!-- İlerleme Çubuğu -->
+            <div class="progress-container" style="margin-bottom: 20px;">
+                <div class="progress-bar" style="width: @($"{active.Progress}%");"></div>
+            </div>
+
+            <!-- Canlı Konsol Logları -->
+            <div class="console-box">
+                @foreach (var log in active.LogLines.AsEnumerable().Reverse().Take(100).Reverse())
+                {
+                    <div class="console-line">@log</div>
+                }
+            </div>
+        </div>
+    }
+}
+
+<!-- Son Yedeklemeler ve Hızlı Başlatma -->
+<div class="grid-2">
+    <!-- Son Geçmiş Tablosu -->
+    <div class="glass-panel" style="display: flex; flex-direction: column;">
+        <h3 style="font-weight: 700; margin-bottom: 15px;">Son Yedekleme Geçmişi</h3>
+        
+        <div style="flex: 1; overflow-x: auto;">
+            @if (RecentHistories.Count == 0)
+            {
+                <div style="color: var(--text-muted); text-align: center; padding: 45px 0;">
+                    Henüz alınmış bir yedek kaydı bulunmuyor.
+                </div>
+            }
+            else
+            {
+                <table class="custom-table">
+                    <thead>
+                        <tr>
+                            <th>Görev Adı</th>
+                            <th>Sürüm</th>
+                            <th>Tarih</th>
+                            <th>Boyut</th>
+                            <th>Durum</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var hist in RecentHistories)
+                        {
+                            <tr>
+                                <td>@hist.JobName</td>
+                                <td>@($"v{hist.VersionNumber}")</td>
+                                <td>@hist.Timestamp.ToLocalTime().ToString("dd.MM.yyyy HH:mm")</td>
+                                <td>@FormatBytes(hist.SizeInBytes)</td>
+                                <td>
+                                    @if (hist.Status == "Success")
+                                    {
+                                        <span class="badge badge-success">Başarılı</span>
+                                    }
+                                    else if (hist.Status == "Failed")
+                                    {
+                                        <span class="badge badge-danger">Hata</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="badge badge-warning">Çalışıyor</span>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+    </div>
+
+    <!-- Hızlı Çalıştırma Listesi -->
+    <div class="glass-panel">
+        <h3 style="font-weight: 700; margin-bottom: 15px;">Hızlı Yedek Başlat</h3>
+        <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 20px;">
+            Aşağıdaki aktif tanımlı görevleri hemen başlatarak manuel VHD yedeği alabilirsiniz.
+        </p>
+
+        <div style="display: flex; flex-direction: column; gap: 12px;">
+            @if (BackupJobs.Count == 0)
+            {
+                <div style="color: var(--text-muted); text-align: center; padding: 30px 0;">
+                    Tanımlı aktif bir yedekleme görevi bulunmuyor. <a href="jobs" style="color: var(--accent-purple);">Yedekleme İşleri</a> sayfasından yeni bir görev tanımlayabilirsiniz.
+                </div>
+            }
+            else
+            {
+                @foreach (var job in BackupJobs)
+                {
+                    var isRunning = ActiveBackups.Any(b => b.JobId == job.Id);
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 14px; background: rgba(255,255,255,0.02); border: 1px solid var(--border-light); border-radius: var(--radius-md);">
+                        <div>
+                            <div style="font-weight: 600; color: var(--text-primary);">@job.Name</div>
+                            <div style="font-size: 0.8rem; color: var(--text-secondary); max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                                @job.SourcePaths
+                            </div>
+                        </div>
+                        <button class="btn btn-primary" style="padding: 8px 16px; font-size: 0.85rem;" 
+                                @onclick="() => TriggerBackupAsync(job)" 
+                                disabled="@isRunning">
+                            @if (isRunning)
+                            {
+                                <span>Çalışıyor...</span>
+                            }
+                            else
+                            {
+                                <span>Şimdi Çalıştır</span>
+                            }
+                        </button>
+                    </div>
+                }
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    private int TotalJobs { get; set; }
+    private int TotalBackups { get; set; }
+    private long TotalSize { get; set; }
+    private string TotalSizeFormatted => FormatBytes(TotalSize);
+
+    private List<BackupJob> BackupJobs { get; set; } = new();
+    private List<BackupHistory> RecentHistories { get; set; } = new();
+    private List<RunningBackupState> ActiveBackups { get; set; } = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDashboardDataAsync();
+        
+        // Aktif arka plan işlemlerini listele
+        ActiveBackups = BackupCoordinator.GetActiveBackups();
+        
+        // Aktif işlemlerde bir durum değiştiğinde sayfayı yenilemek için event'e abone ol
+        BackupCoordinator.OnStateChanged += HandleStateChanged;
+        
+        // Aktif işlemlerin kendi içlerindeki durum değişikliklerine abone ol
+        foreach (var active in ActiveBackups)
+        {
+            active.OnChanged += HandleStateChanged;
+        }
+    }
+
+    private async Task LoadDashboardDataAsync()
+    {
+        DbContext.ChangeTracker.Clear();
+
+        TotalJobs = await DbContext.BackupJobs.CountAsync(j => j.IsActive);
+        TotalBackups = await DbContext.BackupHistories.CountAsync(h => h.Status == "Success");
+        
+        // SQLite SUM sorgusu
+        TotalSize = await DbContext.BackupHistories
+            .Where(h => h.Status == "Success")
+            .SumAsync(h => h.SizeInBytes);
+
+        BackupJobs = await DbContext.BackupJobs
+            .AsNoTracking()
+            .Where(j => j.IsActive)
+            .ToListAsync();
+        RecentHistories = await DbContext.BackupHistories
+            .AsNoTracking()
+            .OrderByDescending(h => h.Timestamp)
+            .Take(5)
+            .ToListAsync();
+    }
+
+    private void HandleStateChanged()
+    {
+        InvokeAsync(async () =>
+        {
+            ActiveBackups = BackupCoordinator.GetActiveBackups();
+            // Yeni başlayan işlemlerin iç eventlerine de abone ol
+            foreach (var active in ActiveBackups)
+            {
+                active.OnChanged -= HandleStateChanged; // Mükerrer aboneliği önle
+                active.OnChanged += HandleStateChanged;
+            }
+            await LoadDashboardDataAsync();
+            StateHasChanged();
+        });
+    }
+
+    private async Task TriggerBackupAsync(BackupJob job)
+    {
+        var runningState = BackupCoordinator.StartJob(job.Id, job.Name);
+        runningState.OnChanged += HandleStateChanged;
+        
+        // Yedekleme işlemini arka planda tetikliyoruz
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var scope = ServiceProvider.CreateScope();
+                var backupService = scope.ServiceProvider.GetRequiredService<IBackupService>();
+                var db = scope.ServiceProvider.GetRequiredService<KoruDiskDbContext>();
+
+                // İlişkili hedefleri de yükle
+                var dbJob = await db.BackupJobs.Include(j => j.Destinations).FirstAsync(j => j.Id == job.Id);
+
+                await backupService.ExecuteBackupJobAsync(dbJob,
+                    (level, msg) =>
+                    {
+                        runningState.AddLog(level, msg);
+                        InvokeAsync(StateHasChanged);
+                    },
+                    (step, pct) =>
+                    {
+                        runningState.Update(step, pct);
+                        InvokeAsync(StateHasChanged);
+                    },
+                    runningState.CancellationToken);
+            }
+            catch (Exception ex)
+            {
+                runningState.AddLog("Error", $"Çalıştırma Hatası: {ex.Message}");
+            }
+            finally
+            {
+                BackupCoordinator.CompleteJob(job.Id);
+                // İşlem bittikten sonra sayfa durumunu yenile
+                await InvokeAsync(async () =>
+                {
+                    await LoadDashboardDataAsync();
+                    StateHasChanged();
+                });
+            }
+        });
+
+        await Task.Delay(200);
+        HandleStateChanged();
+    }
+
+    private void CancelBackup(int jobId)
+    {
+        BackupCoordinator.RequestCancel(jobId);
+        HandleStateChanged();
+    }
+
+    private string FormatBytes(long bytes)
+    {
+        string[] suffix = { "B", "KB", "MB", "GB", "TB" };
+        int i;
+        double dblBytes = bytes;
+        for (i = 0; i < suffix.Length && bytes >= 1024; i++, bytes /= 1024)
+        {
+            dblBytes = bytes / 1024.0;
+        }
+        return $"{dblBytes:0.##} {suffix[i]}";
+    }
+
+    public void Dispose()
+    {
+        BackupCoordinator.OnStateChanged -= HandleStateChanged;
+        foreach (var active in ActiveBackups)
+        {
+            active.OnChanged -= HandleStateChanged;
+        }
+    }
+}

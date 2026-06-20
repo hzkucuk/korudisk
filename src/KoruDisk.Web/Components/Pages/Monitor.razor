@@ -1,0 +1,144 @@
+@page "/monitor"
+@using KoruDisk.Infrastructure.Services
+@implements IDisposable
+@inject BackupCoordinator BackupCoordinator
+
+<PageTitle>KoruDisk - Canlı Görev Monitörü</PageTitle>
+
+<div style="display: flex; justify-content: space-between; align-items: end; gap: 16px; flex-wrap: wrap; margin-bottom: 24px;">
+    <div>
+        <h1>Canlı Görev Monitörü</h1>
+        <p class="subtitle">Aktif çalışan yedekleme görevlerini, ilerleme adımlarını ve anlık konsol satırlarını canlı izleyin.</p>
+    </div>
+    <button class="btn btn-secondary" @onclick="RefreshStates">Yenile</button>
+</div>
+
+@if (ActiveBackups.Count == 0)
+{
+    <div class="glass-panel" style="padding: 36px; text-align: center;">
+        <div style="font-size: 1.1rem; font-weight: 700; color: var(--text-primary); margin-bottom: 8px;">Şu anda çalışan görev yok</div>
+        <div style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 20px;">Gösterge panelinden veya zamanlanmış işlerden bir görev tetiklendiğinde bu ekran otomatik güncellenir.</div>
+        <div style="display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;">
+            <a class="btn btn-primary" href="/">Gösterge Paneline Git</a>
+            <a class="btn btn-secondary" href="jobs">Görevleri Aç</a>
+            <a class="btn btn-secondary" href="history">Geçmişi Aç</a>
+        </div>
+    </div>
+}
+else
+{
+    <div style="display: flex; flex-direction: column; gap: 18px;">
+        @foreach (var backup in ActiveBackups)
+        {
+            <div class="glass-panel" style="display: flex; flex-direction: column; gap: 16px;">
+                <div style="display: flex; justify-content: space-between; align-items: start; gap: 14px; flex-wrap: wrap;">
+                    <div>
+                        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px;">
+                            <h3 style="margin: 0; font-weight: 700;">@backup.JobName</h3>
+                            <span class="badge badge-warning">Çalışıyor</span>
+                            @if (backup.IsCancellationRequested)
+                            {
+                                <span class="badge badge-danger">İptal Bekleniyor</span>
+                            }
+                        </div>
+                        <div style="font-size: 0.86rem; color: var(--text-secondary);">Görev No: @backup.JobId</div>
+                    </div>
+                    <div style="text-align: right; min-width: 160px; display: flex; flex-direction: column; align-items: end; gap: 8px;">
+                        <button class="btn btn-danger" style="padding: 8px 12px; font-size: 0.8rem;" @onclick="() => CancelBackup(backup.JobId)" disabled="@backup.IsCancellationRequested">
+                            @(backup.IsCancellationRequested ? "İptal Bekleniyor" : "İptal Et")
+                        </button>
+                        <div style="font-size: 1.15rem; font-weight: 700; color: var(--text-primary);">@backup.Progress.ToString("0")%</div>
+                        <div style="font-size: 0.84rem; color: var(--text-secondary);">@backup.CurrentStep</div>
+                    </div>
+                </div>
+
+                <div style="height: 12px; border-radius: 999px; overflow: hidden; background: rgba(255,255,255,0.08); border: 1px solid var(--border-light);">
+                    <div style="height: 100%; width: @GetProgressWidth(backup); background: linear-gradient(90deg, var(--accent-cyan), var(--accent-purple)); transition: width 0.25s ease;"></div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1.1fr 1.4fr; gap: 16px;">
+                    <div style="padding: 16px; border: 1px solid var(--border-light); border-radius: var(--radius-md); background: rgba(255,255,255,0.03);">
+                        <div style="font-size: 0.78rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 8px;">Anlık Durum</div>
+                        <div style="font-size: 0.98rem; color: var(--text-primary); font-weight: 700; margin-bottom: 8px;">@GetCurrentStep(backup)</div>
+                        <div style="font-size: 0.84rem; color: var(--text-secondary); line-height: 1.55;">Bu kart, `BackupCoordinator` üzerinden gelen durum ve log olaylarını doğrudan dinler. Çalışma bitince kart otomatik olarak listeden kalkar.</div>
+                    </div>
+
+                    <div>
+                        <div style="font-size: 0.78rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 8px;">Canlı Log Akışı</div>
+                        <div class="console-box" style="height: 260px;">
+                            @if (backup.LogLines.Count == 0)
+                            {
+                                <div class="console-line Info">Henüz log üretilmedi.</div>
+                            }
+                            else
+                            {
+                                @foreach (var line in backup.LogLines.TakeLast(120))
+                                {
+                                    <div class="console-line Info">@line</div>
+                                }
+                            }
+                        </div>
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    private List<RunningBackupState> ActiveBackups { get; set; } = new();
+
+    protected override void OnInitialized()
+    {
+        RefreshStates();
+        BackupCoordinator.OnStateChanged += HandleStateChanged;
+        SubscribeToStates();
+    }
+
+    private void HandleStateChanged()
+    {
+        InvokeAsync(() =>
+        {
+            RefreshStates();
+            SubscribeToStates();
+            StateHasChanged();
+        });
+    }
+
+    private void RefreshStates()
+    {
+        ActiveBackups = BackupCoordinator.GetActiveBackups();
+    }
+
+    private void CancelBackup(int jobId)
+    {
+        BackupCoordinator.RequestCancel(jobId);
+        RefreshStates();
+    }
+
+    private void SubscribeToStates()
+    {
+        foreach (var state in ActiveBackups)
+        {
+            state.OnChanged -= HandleStateChanged;
+            state.OnChanged += HandleStateChanged;
+        }
+    }
+
+    private static string GetProgressWidth(RunningBackupState state)
+    {
+        var progress = Math.Clamp(state.Progress, 0, 100);
+        return $"{progress:0}%";
+    }
+
+    private static string GetCurrentStep(RunningBackupState state) => string.IsNullOrWhiteSpace(state.CurrentStep) ? "Hazırlanıyor" : state.CurrentStep;
+
+    public void Dispose()
+    {
+        BackupCoordinator.OnStateChanged -= HandleStateChanged;
+        foreach (var state in ActiveBackups)
+        {
+            state.OnChanged -= HandleStateChanged;
+        }
+    }
+}

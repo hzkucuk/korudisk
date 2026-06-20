@@ -1,0 +1,33 @@
+# macOS
+.DS_Store
+
+# VS Code
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+# .NET build output
+**/bin/
+**/obj/
+
+# Test and coverage artifacts
+**/TestResults/
+**/*.trx
+**/*.coverage
+**/*.coveragexml
+
+# Logs and runtime files
+**/*.log
+
+# Local databases and secrets
+**/*.db
+**/*.db-shm
+**/*.db-wal
+src/KoruDisk.Web/DataProtectionKeys/
+src/KoruDisk.Web/appsettings.Development.local.json
+
+# User/IDE specific
+*.user
+*.suo

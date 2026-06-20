@@ -1,0 +1,184 @@
+@using System.IO
+@namespace KoruDisk.Web.Components.Shared
+
+@if (IsOpen)
+{
+    <div class="modal-overlay">
+        <div class="glass-panel modal-card" style="width: 650px; max-height: 80vh; display: flex; flex-direction: column;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid var(--border-light); padding-bottom: 15px;">
+                <h3 style="font-weight: 700; font-size: 1.25rem;">Klasör Seç</h3>
+                <button class="btn btn-secondary" style="padding: 6px 12px;" @onclick="Close">X</button>
+            </div>
+
+            <!-- Mevcut Yol Girişi -->
+            <div class="form-group" style="display: flex; gap: 10px; margin-bottom: 15px;">
+                <input type="text" class="form-control" @bind="CurrentPath" style="flex: 1; font-family: monospace;" readonly />
+                <button class="btn btn-secondary" style="padding: 10px 15px;" @onclick="GoUp" disabled="@IsRoot">
+                    <!-- Üst Dizin Butonu (SVG ok) -->
+                    <svg style="width:16px; height:16px; fill:currentColor;" viewBox="0 0 24 24">
+                        <path d="M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z"/>
+                    </svg>
+                </button>
+            </div>
+
+            <!-- Sürücüler Listesi (Windows için) veya Temel Kısayollar -->
+            @if (Drives.Length > 1)
+            {
+                <div style="display: flex; gap: 8px; margin-bottom: 15px; flex-wrap: wrap;">
+                    @foreach (var drive in Drives)
+                    {
+                        <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.85rem;" @onclick="() => NavigateTo(drive)">
+                            @drive
+                        </button>
+                    }
+                </div>
+            }
+
+            <!-- Klasörler Listesi -->
+            <div style="flex: 1; overflow-y: auto; background: rgba(0, 0, 0, 0.2); border: 1px solid var(--border-light); border-radius: var(--radius-md); padding: 10px; min-height: 250px;">
+                @if (ErrorMessage != null)
+                {
+                    <div style="color: var(--accent-danger); font-size: 0.9rem; padding: 10px;">
+                        @ErrorMessage
+                    </div>
+                }
+                else
+                {
+                    <div style="display: flex; flex-direction: column; gap: 4px;">
+                        @foreach (var subDir in SubDirectories)
+                        {
+                            <div class="tree-node" @onclick="() => NavigateTo(subDir.FullPath)" style="display: flex; align-items: center; justify-content: space-between;">
+                                <div style="display: flex; align-items: center; gap: 8px;">
+                                    <!-- Klasör İkonu -->
+                                    <svg style="width: 18px; height: 18px; fill: var(--accent-cyan);" viewBox="0 0 24 24">
+                                        <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
+                                    </svg>
+                                    <span>@subDir.Name</span>
+                                </div>
+                            </div>
+                        }
+
+                        @if (SubDirectories.Count == 0)
+                        {
+                            <div style="color: var(--text-muted); font-size: 0.85rem; text-align: center; padding: 20px;">
+                                Alt klasör bulunamadı.
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+
+            <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 20px; border-top: 1px solid var(--border-light); padding-top: 15px;">
+                <button class="btn btn-secondary" @onclick="Close">Vazgeç</button>
+                <button class="btn btn-primary" @onclick="ConfirmSelection">Klasörü Seç</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public bool IsOpen { get; set; }
+    [Parameter] public EventCallback<bool> IsOpenChanged { get; set; }
+    [Parameter] public EventCallback<string> OnFolderSelected { get; set; }
+
+    private string CurrentPath { get; set; } = string.Empty;
+    private List<FolderItem> SubDirectories { get; set; } = new();
+    private string[] Drives { get; set; } = Array.Empty<string>();
+    private string? ErrorMessage { get; set; }
+    private bool IsRoot => string.IsNullOrEmpty(CurrentPath) || Path.GetPathRoot(CurrentPath) == CurrentPath;
+
+    protected override void OnParametersSet()
+    {
+        if (IsOpen && string.IsNullOrEmpty(CurrentPath))
+        {
+            // İlk açılışta kullanıcı ana dizinini veya masaüstünü göster
+            CurrentPath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            if (string.IsNullOrEmpty(CurrentPath) || !Directory.Exists(CurrentPath))
+            {
+                CurrentPath = "/";
+            }
+            
+            LoadDirectories();
+            try
+            {
+                Drives = Directory.GetLogicalDrives();
+            }
+            catch
+            {
+                Drives = Array.Empty<string>();
+            }
+        }
+    }
+
+    private void LoadDirectories()
+    {
+        try
+        {
+            ErrorMessage = null;
+            SubDirectories.Clear();
+
+            if (!Directory.Exists(CurrentPath))
+            {
+                return;
+            }
+
+            var dirs = Directory.GetDirectories(CurrentPath);
+            foreach (var dir in dirs)
+            {
+                // Gizli klasörleri atla
+                var name = Path.GetFileName(dir);
+                if (name.StartsWith('.') || name.StartsWith('$')) continue;
+
+                SubDirectories.Add(new FolderItem
+                {
+                    Name = name,
+                    FullPath = dir
+                });
+            }
+
+            SubDirectories = SubDirectories.OrderBy(d => d.Name).ToList();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            ErrorMessage = "Bu klasöre erişim izniniz bulunmuyor.";
+        }
+        catch (Exception ex)
+        {
+            ErrorMessage = $"Klasörler listelenirken hata oluştu: {ex.Message}";
+        }
+    }
+
+    private void NavigateTo(string path)
+    {
+        CurrentPath = path;
+        LoadDirectories();
+    }
+
+    private void GoUp()
+    {
+        var parent = Directory.GetParent(CurrentPath);
+        if (parent != null)
+        {
+            CurrentPath = parent.FullName;
+            LoadDirectories();
+        }
+    }
+
+    private async Task ConfirmSelection()
+    {
+        await OnFolderSelected.InvokeAsync(CurrentPath);
+        await Close();
+    }
+
+    private async Task Close()
+    {
+        IsOpen = false;
+        await IsOpenChanged.InvokeAsync(false);
+    }
+
+    private class FolderItem
+    {
+        public string Name { get; set; } = string.Empty;
+        public string FullPath { get; set; } = string.Empty;
+    }
+}

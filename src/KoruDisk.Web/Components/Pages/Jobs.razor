@@ -1,0 +1,962 @@
+@page "/jobs"
+@using Cronos
+@using KoruDisk.Core.Entities
+@using KoruDisk.Core.Enums
+@using KoruDisk.Infrastructure.Data
+@using KoruDisk.Web.Components.Shared
+@using Microsoft.EntityFrameworkCore
+@inject KoruDiskDbContext DbContext
+
+<PageTitle>KoruDisk - Yedekleme İşleri</PageTitle>
+
+<div style="display: flex; justify-content: space-between; align-items: end; gap: 16px; flex-wrap: wrap; margin-bottom: 24px;">
+    <div>
+        <h1>Yedekleme İşleri</h1>
+        <p class="subtitle">Görevlerinizi sihirbaz akışıyla oluşturun, kaynakları seçin ve hedef dağıtımını tek yerden yönetin.</p>
+    </div>
+    <button class="btn btn-primary" @onclick="OpenCreateDialog">Yeni Görev</button>
+</div>
+
+<div class="grid-2">
+    <div class="glass-panel">
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 20px;">
+            <h3 style="font-weight: 700; margin: 0;">Tanımlı Görevler</h3>
+            <button class="btn btn-secondary" style="padding: 8px 14px;" @onclick="ReloadDataAsync">Yenile</button>
+        </div>
+
+        @if (BackupJobsList.Count == 0)
+        {
+            <div style="color: var(--text-muted); text-align: center; padding: 50px 0;">
+                Kayıtlı yedekleme görevi bulunmuyor. İlk görevinizi oluşturmak için sağ üstteki düğmeyi kullanın.
+            </div>
+        }
+        else
+        {
+            <div style="display: flex; flex-direction: column; gap: 15px;">
+                @foreach (var job in BackupJobsList)
+                {
+                    <div style="padding: 16px; background: rgba(255,255,255,0.02); border: 1px solid var(--border-light); border-radius: var(--radius-md); display: flex; flex-direction: column; gap: 10px;">
+                        <div style="display: flex; justify-content: space-between; align-items: start; gap: 12px; flex-wrap: wrap;">
+                            <div>
+                                <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px;">
+                                    <span style="font-weight: 700; font-size: 1.08rem; color: var(--text-primary);">@job.Name</span>
+                                    <span class="badge @(job.IsActive ? "badge-success" : "badge-warning")">@(job.IsActive ? "Aktif" : "Pasif")</span>
+                                </div>
+                                <div style="font-size: 0.84rem; color: var(--text-secondary);">
+                                    @GetSourceCountLabel(job.SourcePaths) • @GetDestinationCountLabel(job.Destinations.Count)
+                                </div>
+                            </div>
+                            <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                                <span class="badge badge-info">@GetVersioningLabel(job.Versioning)</span>
+                                <span class="badge @(job.Compression == CompressionType.None ? "badge-warning" : "badge-success")">@GetCompressionLabel(job.Compression)</span>
+                            </div>
+                        </div>
+
+                        <div style="display: grid; gap: 8px; font-size: 0.85rem; color: var(--text-secondary);">
+                            <div><strong>Kaynaklar:</strong> @string.Join(", ", ParseDelimitedValues(job.SourcePaths).Take(2))@(ParseDelimitedValues(job.SourcePaths).Count > 2 ? " ..." : string.Empty)</div>
+                            <div><strong>Zamanlama:</strong> @GetScheduleSummary(job.CronExpression)</div>
+                            <div><strong>Hedefler:</strong> @(job.Destinations.Count == 0 ? "Sadece yerel çıktı" : string.Join(", ", job.Destinations.Select(d => d.Name)))</div>
+                        </div>
+
+                        <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 4px; border-top: 1px solid var(--border-light); padding-top: 10px; flex-wrap: wrap;">
+                            <span style="font-size: 0.8rem; color: var(--text-muted);">Saklama limiti: @job.RetentionCount sürüm</span>
+                            <div style="display: flex; gap: 8px;">
+                                <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.8rem;" @onclick="() => OpenEditDialog(job)">Düzenle</button>
+                                <button class="btn btn-danger" style="padding: 6px 12px; font-size: 0.8rem;" @onclick="() => DeleteJobAsync(job.Id)">Sil</button>
+                            </div>
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+    </div>
+
+    <div class="glass-panel">
+        <h3 style="font-weight: 700; margin-bottom: 18px;">Kurulum Akışı</h3>
+        <div style="display: flex; flex-direction: column; gap: 14px;">
+            <div style="padding: 16px; border: 1px solid var(--border-light); border-radius: var(--radius-md); background: rgba(255,255,255,0.03);">
+                <div style="font-size: 0.78rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 6px;">1. Kaynaklar</div>
+                <div style="font-size: 0.95rem; color: var(--text-primary); margin-bottom: 4px;">Klasörleri seçin ve filtreleri tanımlayın.</div>
+                <div style="font-size: 0.82rem; color: var(--text-secondary);">Birden fazla kaynak için yolları `;` ile ayırabilir veya seçiciyle sırayla ekleyebilirsiniz.</div>
+            </div>
+            <div style="padding: 16px; border: 1px solid var(--border-light); border-radius: var(--radius-md); background: rgba(255,255,255,0.03);">
+                <div style="font-size: 0.78rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 6px;">2. Strateji</div>
+                <div style="font-size: 0.95rem; color: var(--text-primary); margin-bottom: 4px;">Sürümleme, sıkıştırma ve saklama politikasını belirleyin.</div>
+                <div style="font-size: 0.82rem; color: var(--text-secondary);">Tam veya artımlı yedek akışını görev bazlı ayarlayabilirsiniz.</div>
+            </div>
+            <div style="padding: 16px; border: 1px solid var(--border-light); border-radius: var(--radius-md); background: rgba(255,255,255,0.03);">
+                <div style="font-size: 0.78rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 6px;">3. Hedef Dağıtımı</div>
+                <div style="font-size: 0.95rem; color: var(--text-primary); margin-bottom: 4px;">Çıktının hangi hedeflere gönderileceğini seçin.</div>
+                <div style="font-size: 0.82rem; color: var(--text-secondary);">Kayıtlı hedef yoksa görev yine kaydedilir, çıktı uygulamanın yerel alanında kalır.</div>
+            </div>
+
+            <div style="padding: 18px; border: 1px dashed var(--border-light); border-radius: var(--radius-md); background: rgba(0,0,0,0.14);">
+                <div style="display: flex; justify-content: space-between; align-items: start; gap: 12px; flex-wrap: wrap; margin-bottom: 12px;">
+                    <div>
+                        <div style="font-size: 0.78rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 5px;">Özet</div>
+                        <div style="font-size: 1.1rem; font-weight: 700; color: var(--text-primary);">@BackupJobsList.Count görev, @AvailableDestinations.Count aktif hedef</div>
+                    </div>
+                    <a class="btn btn-secondary" href="monitor" style="padding: 8px 14px;">Canlı Monitör</a>
+                </div>
+                <div style="font-size: 0.84rem; color: var(--text-secondary); line-height: 1.5;">
+                    Yeni görev sihirbazı ile kurulum adım adım ilerler. Çalışan işler ve anlık loglar için canlı monitör ekranını kullanabilirsiniz.
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@if (IsJobDialogOpen)
+{
+    <div class="modal-overlay">
+        <div class="glass-panel modal-card" style="width: 960px; max-width: 94vw; max-height: 88vh; display: flex; flex-direction: column;">
+            <div style="display: flex; justify-content: space-between; align-items: start; gap: 18px; margin-bottom: 18px; border-bottom: 1px solid var(--border-light); padding-bottom: 14px; flex-wrap: wrap;">
+                <div>
+                    <h3 style="font-weight: 700; font-size: 1.2rem; margin-bottom: 6px;">@(CurrentJob.Id == 0 ? "Yeni Görev Tanımla" : $"Görevi Düzenle: {CurrentJob.Name}")</h3>
+                    <div style="font-size: 0.85rem; color: var(--text-secondary);">Kaynak, strateji ve hedefleri adım adım ayarlayın.</div>
+                </div>
+                <button class="btn btn-secondary" style="padding: 8px 12px;" @onclick="CloseDialog">Kapat</button>
+            </div>
+
+            <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 18px;">
+                @foreach (var step in WizardSteps)
+                {
+                    <button
+                        type="button"
+                        class="btn @(CurrentStep == step.Number ? "btn-primary" : "btn-secondary")"
+                        style="padding: 8px 14px;"
+                        @onclick="() => GoToStep(step.Number)">
+                        @step.Number. @step.Title
+                    </button>
+                }
+            </div>
+
+            <div style="overflow-y: auto; padding-right: 4px;">
+                @if (CurrentStep == 1)
+                {
+                    <div class="grid-2" style="gap: 18px;">
+                        <div>
+                            <div class="form-group">
+                                <label class="form-label">Görev Adı</label>
+                                <input type="text" class="form-control" @bind-value="CurrentJob.Name" placeholder="örn: Finans Arşivi" />
+                            </div>
+
+                            <div class="form-group">
+                                <label class="form-label">Kaynak Klasörler</label>
+                                <div style="display: flex; gap: 10px;">
+                                    <textarea class="form-control" rows="4" @bind="CurrentJob.SourcePaths" placeholder="Bir veya daha fazla klasör yolu girin. Birden fazla yol için `;` kullanın."></textarea>
+                                    <button type="button" class="btn btn-secondary" style="padding: 10px 15px; align-self: start;" @onclick="OpenFolderPicker">Seç...</button>
+                                </div>
+                                <span style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; display: block;">
+                                    Seçiciyle eklenen klasörler otomatik olarak listeye eklenir.
+                                </span>
+                            </div>
+
+                            <div class="form-group">
+                                <label class="form-label">Dosya Filtreleri</label>
+                                <input type="text" class="form-control" @bind-value="CurrentJob.FileFilters" placeholder="örn: *.*;!*.tmp;!*.log" />
+                            </div>
+                        </div>
+
+                        <div style="padding: 18px; border: 1px solid var(--border-light); border-radius: var(--radius-md); background: rgba(255,255,255,0.03);">
+                            <div style="font-size: 0.78rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 10px;">Kaynak Önizleme</div>
+                            @if (ParsedSourcePaths.Count == 0)
+                            {
+                                <div style="font-size: 0.85rem; color: var(--text-muted);">Henüz kaynak seçilmedi.</div>
+                            }
+                            else
+                            {
+                                <div style="display: flex; flex-direction: column; gap: 8px;">
+                                    @foreach (var path in ParsedSourcePaths)
+                                    {
+                                        <div style="padding: 10px 12px; border-radius: var(--radius-md); border: 1px solid var(--border-light); background: rgba(0,0,0,0.14); font-family: monospace; font-size: 0.82rem; color: var(--text-primary); word-break: break-all;">@path</div>
+                                    }
+                                </div>
+                            }
+
+                            <div style="margin-top: 18px; font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5;">
+                                Bu adım tamamlanmadan sonraki aşamaya geçilmez. Görev adı ve en az bir kaynak klasör zorunludur.
+                            </div>
+                        </div>
+                    </div>
+                }
+                else if (CurrentStep == 2)
+                {
+                    <div class="grid-2" style="gap: 18px;">
+                        <div>
+                            <div class="grid-2" style="gap: 16px;">
+                                <div class="form-group">
+                                    <label class="form-label">Yedekleme Türü</label>
+                                    <select class="form-control" @bind="CurrentJob.Versioning">
+                                        <option value="Full">Tam Yedek</option>
+                                        <option value="Incremental">Artımlı Yedek</option>
+                                    </select>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label">Sıkıştırma</label>
+                                    <select class="form-control" @bind="CurrentJob.Compression">
+                                        <option value="None">Sıkıştırma Yok</option>
+                                        <option value="Zip">Zip</option>
+                                        <option value="Gzip">GZip</option>
+                                        <option value="Deflate">Deflate</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="grid-2" style="gap: 16px; align-items: start;">
+                                <div style="display: flex; flex-direction: column; gap: 16px;">
+                                    <div class="form-group">
+                                        <label class="form-label">Zamanlama Planı</label>
+                                        <select class="form-control" value="@SelectedScheduleMode" @onchange="SetScheduleMode">
+                                            <option value="Manual">Manuel</option>
+                                            <option value="Hourly">Saatlik</option>
+                                            <option value="Daily">Günlük</option>
+                                            <option value="Weekly">Haftalık</option>
+                                            <option value="Monthly">Aylık</option>
+                                            <option value="Custom">Özel Cron</option>
+                                        </select>
+                                    </div>
+
+                                    <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+                                        <button type="button" class="btn @(SelectedScheduleMode == "Manual" ? "btn-primary" : "btn-secondary")" style="padding: 6px 10px; font-size: 0.78rem;" @onclick='@(() => ApplyScheduleModePreset("Manual"))'>Manuel</button>
+                                        <button type="button" class="btn @(SelectedScheduleMode == "Hourly" ? "btn-primary" : "btn-secondary")" style="padding: 6px 10px; font-size: 0.78rem;" @onclick='@(() => ApplyScheduleModePreset("Hourly"))'>Saatlik</button>
+                                        <button type="button" class="btn @(SelectedScheduleMode == "Daily" ? "btn-primary" : "btn-secondary")" style="padding: 6px 10px; font-size: 0.78rem;" @onclick='@(() => ApplyScheduleModePreset("Daily"))'>Günlük</button>
+                                        <button type="button" class="btn @(SelectedScheduleMode == "Weekly" ? "btn-primary" : "btn-secondary")" style="padding: 6px 10px; font-size: 0.78rem;" @onclick='@(() => ApplyScheduleModePreset("Weekly"))'>Haftalık</button>
+                                        <button type="button" class="btn @(SelectedScheduleMode == "Monthly" ? "btn-primary" : "btn-secondary")" style="padding: 6px 10px; font-size: 0.78rem;" @onclick='@(() => ApplyScheduleModePreset("Monthly"))'>Aylık</button>
+                                    </div>
+
+                                    <div style="font-size: 0.8rem; color: var(--text-secondary); background: rgba(255,255,255,0.03); border: 1px solid var(--border-light); border-radius: var(--radius-md); padding: 10px 12px;">
+                                        @GetScheduleModeHint(SelectedScheduleMode)
+                                    </div>
+
+                                    @if (SelectedScheduleMode != "Manual" && SelectedScheduleMode != "Custom")
+                                    {
+                                        <div class="grid-2" style="gap: 12px;">
+                                            <div class="form-group">
+                                                <label class="form-label">Saat</label>
+                                                <input type="time" class="form-control" value="@ScheduleTime" @onchange="SetScheduleTime" />
+                                            </div>
+
+                                            <div class="form-group">
+                                                <label class="form-label">Dakika</label>
+                                                <input type="number" class="form-control" min="0" max="59" value="@ScheduleMinute" @onchange="SetScheduleMinute" />
+                                            </div>
+                                        </div>
+                                    }
+
+                                    @if (SelectedScheduleMode == "Weekly")
+                                    {
+                                        <div class="form-group">
+                                            <label class="form-label">Haftanın Günü</label>
+                                            <select class="form-control" value="@ScheduleDayOfWeek" @onchange="SetScheduleDayOfWeek">
+                                                @foreach (var option in DayOfWeekOptions)
+                                                {
+                                                    <option value="@option.Value">@option.Label</option>
+                                                }
+                                            </select>
+                                        </div>
+                                    }
+
+                                    @if (SelectedScheduleMode == "Monthly")
+                                    {
+                                        <div class="form-group">
+                                            <label class="form-label">Ayın Günü</label>
+                                            <input type="number" class="form-control" min="1" max="28" value="@ScheduleDayOfMonth" @onchange="SetScheduleDayOfMonth" />
+                                        </div>
+                                    }
+
+                                    <div class="form-group">
+                                        <label class="form-label">Oluşan Zamanlama</label>
+                                        <input type="text" class="form-control" value="@CurrentJob.CronExpression" readonly placeholder="Manuel modda boş bırakılır" />
+                                    </div>
+
+                                    <details style="border: 1px dashed var(--border-light); border-radius: var(--radius-md); padding: 10px 12px; background: rgba(0,0,0,0.14);">
+                                        <summary style="cursor: pointer; color: var(--text-secondary); font-size: 0.82rem;">İleri seviye: Cron ifadesini elle düzenle</summary>
+                                        <div style="margin-top: 10px;">
+                                            <input type="text" class="form-control" value="@CurrentJob.CronExpression" @oninput="SetCustomCronExpression" placeholder="örn: 0 12 * * *" />
+                                            <span style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; display: block;">
+                                                Elle değiştirildiğinde mod otomatik olarak Özel Cron olur.
+                                            </span>
+                                        </div>
+                                    </details>
+
+                                    <div style="padding: 12px; border: 1px solid var(--border-light); border-radius: var(--radius-md); background: rgba(255,255,255,0.03);">
+                                        <div style="font-size: 0.78rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 8px;">Sonraki Çalıştırmalar</div>
+                                        @if (UpcomingRuns.Count == 0)
+                                        {
+                                            <div style="font-size: 0.82rem; color: var(--text-muted);">@CronValidationMessage</div>
+                                        }
+                                        else
+                                        {
+                                            <div style="display: flex; flex-direction: column; gap: 6px; font-size: 0.84rem; color: var(--text-secondary);">
+                                                @foreach (var run in UpcomingRuns)
+                                                {
+                                                    <div>@run</div>
+                                                }
+                                            </div>
+                                        }
+                                    </div>
+                                </div>
+
+                                <div class="form-group">
+                                    <label class="form-label">Sürüm Saklama Limiti</label>
+                                    <input type="number" class="form-control" @bind-value="CurrentJob.RetentionCount" min="1" max="100" />
+                                </div>
+                            </div>
+
+                            <label style="display: flex; align-items: center; gap: 10px; margin-top: 8px; color: var(--text-secondary);">
+                                <input type="checkbox" @bind="CurrentJob.IsActive" />
+                                <span>Görev aktif olsun</span>
+                            </label>
+                        </div>
+
+                        <div style="padding: 18px; border: 1px solid var(--border-light); border-radius: var(--radius-md); background: rgba(255,255,255,0.03); display: flex; flex-direction: column; gap: 14px;">
+                            <div>
+                                <div style="font-size: 0.78rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 6px;">Seçili Strateji</div>
+                                <div style="font-size: 1rem; color: var(--text-primary); font-weight: 700;">@GetVersioningLabel(CurrentJob.Versioning)</div>
+                                <div style="font-size: 0.84rem; color: var(--text-secondary);">@GetVersioningDescription(CurrentJob.Versioning)</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 0.78rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 6px;">Sıkıştırma Çıkışı</div>
+                                <div style="font-size: 1rem; color: var(--text-primary); font-weight: 700;">@GetCompressionLabel(CurrentJob.Compression)</div>
+                                <div style="font-size: 0.84rem; color: var(--text-secondary);">@GetCompressionDescription(CurrentJob.Compression)</div>
+                            </div>
+                            <div>
+                                <div style="font-size: 0.78rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 6px;">Çalışma Şekli</div>
+                                <div style="font-size: 0.84rem; color: var(--text-secondary);">@GetScheduleSummary(CurrentJob.CronExpression)</div>
+                            </div>
+                        </div>
+                    </div>
+                }
+                else
+                {
+                    <div class="grid-2" style="gap: 18px;">
+                        <div>
+                            <div class="form-group">
+                                <label class="form-label">Dağıtılacak Hedefler</label>
+                                @if (AvailableDestinations.Count == 0)
+                                {
+                                    <div style="padding: 16px; border-radius: var(--radius-md); border: 1px dashed var(--border-light); color: var(--accent-warning); background: rgba(255,255,255,0.03);">
+                                        Kayıtlı hedef bulunamadı. Görev yine kaydedilebilir; çıktı uygulamanın yerel alanında kalır. İsterseniz <a href="destinations" style="color: var(--accent-cyan);">hedef ekleme ekranını</a> açın.
+                                    </div>
+                                }
+                                else
+                                {
+                                    <div style="display: flex; flex-direction: column; gap: 10px; max-height: 320px; overflow-y: auto; padding: 10px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-light); border-radius: var(--radius-md);">
+                                        @foreach (var dest in AvailableDestinations)
+                                        {
+                                            var isChecked = SelectedDestIds.Contains(dest.Id);
+                                            <label style="display: flex; align-items: start; justify-content: space-between; gap: 12px; padding: 12px; border-radius: var(--radius-md); border: 1px solid var(--border-light); background: rgba(255,255,255,0.03); cursor: pointer;">
+                                                <div style="display: flex; gap: 10px;">
+                                                    <input type="checkbox" checked="@isChecked" @onchange="(e) => ToggleDestination(dest.Id, e.Value)" />
+                                                    <div>
+                                                        <div style="font-weight: 600; color: var(--text-primary);">@dest.Name</div>
+                                                        <div style="font-size: 0.82rem; color: var(--text-secondary);">@dest.Type • @GetDestinationPreview(dest)</div>
+                                                    </div>
+                                                </div>
+                                            </label>
+                                        }
+                                    </div>
+                                }
+                            </div>
+                        </div>
+
+                        <div style="padding: 18px; border: 1px solid var(--border-light); border-radius: var(--radius-md); background: rgba(255,255,255,0.03); display: flex; flex-direction: column; gap: 14px;">
+                            <div>
+                                <div style="font-size: 0.78rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 6px;">Görev Özeti</div>
+                                <div style="font-size: 1.05rem; font-weight: 700; color: var(--text-primary);">@CurrentJob.Name</div>
+                                <div style="font-size: 0.84rem; color: var(--text-secondary); margin-top: 4px;">@GetSourceCountLabel(CurrentJob.SourcePaths) • @GetDestinationCountLabel(SelectedDestIds.Count)</div>
+                            </div>
+                            <div style="font-size: 0.84rem; color: var(--text-secondary); line-height: 1.55;">
+                                <strong>Kaynaklar:</strong><br />
+                                @foreach (var path in ParsedSourcePaths)
+                                {
+                                    <div style="font-family: monospace; word-break: break-all;">@path</div>
+                                }
+                            </div>
+                            <div style="font-size: 0.84rem; color: var(--text-secondary); line-height: 1.55;">
+                                <strong>Strateji:</strong> @GetVersioningLabel(CurrentJob.Versioning)<br />
+                                <strong>Sıkıştırma:</strong> @GetCompressionLabel(CurrentJob.Compression)<br />
+                                <strong>Zamanlama:</strong> @GetScheduleSummary(CurrentJob.CronExpression)
+                            </div>
+                        </div>
+                    </div>
+                }
+            </div>
+
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 20px; border-top: 1px solid var(--border-light); padding-top: 16px; flex-wrap: wrap;">
+                <div style="font-size: 0.82rem; color: var(--text-muted);">Adım @CurrentStep / 3</div>
+                <div style="display: flex; gap: 10px;">
+                    <button type="button" class="btn btn-secondary" style="padding: 8px 14px;" @onclick="CloseDialog">İptal</button>
+                    @if (CurrentStep > 1)
+                    {
+                        <button type="button" class="btn btn-secondary" style="padding: 8px 14px;" @onclick="PreviousStep">Geri</button>
+                    }
+                    @if (CurrentStep < 3)
+                    {
+                        <button type="button" class="btn btn-primary" style="padding: 8px 14px;" @onclick="NextStep" disabled="@(!CanAdvanceCurrentStep)">İleri</button>
+                    }
+                    else
+                    {
+                        <button type="button" class="btn btn-primary" style="padding: 8px 14px;" @onclick="SaveJobAsync" disabled="@(!CanSaveJob)">Kaydet</button>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+<LocalFolderPicker @bind-IsOpen="IsFolderPickerOpen" OnFolderSelected="HandleFolderSelected" />
+
+@code {
+    private readonly (int Number, string Title)[] WizardSteps =
+    [
+        (1, "Kaynaklar"),
+        (2, "Strateji"),
+        (3, "Hedefler")
+    ];
+
+    private List<BackupJob> BackupJobsList { get; set; } = new();
+    private List<StorageDestination> AvailableDestinations { get; set; } = new();
+    private BackupJob CurrentJob { get; set; } = new();
+    private HashSet<int> SelectedDestIds { get; set; } = new();
+    private static readonly (int Value, string Label)[] DayOfWeekOptions =
+    [
+        (0, "Pazar"),
+        (1, "Pazartesi"),
+        (2, "Salı"),
+        (3, "Çarşamba"),
+        (4, "Perşembe"),
+        (5, "Cuma"),
+        (6, "Cumartesi")
+    ];
+
+    private bool IsFolderPickerOpen { get; set; }
+    private bool IsJobDialogOpen { get; set; }
+    private int CurrentStep { get; set; } = 1;
+    private string SelectedScheduleMode { get; set; } = "Manual";
+    private int ScheduleMinute { get; set; }
+    private int ScheduleHour { get; set; }
+    private string ScheduleTime { get; set; } = "00:00";
+    private int ScheduleDayOfWeek { get; set; } = 1;
+    private int ScheduleDayOfMonth { get; set; } = 1;
+    private List<string> UpcomingRuns { get; set; } = new();
+    private string CronValidationMessage { get; set; } = "Zamanlama seçtiğinizde bir sonraki çalışma zamanları burada görünür.";
+
+    private List<string> ParsedSourcePaths => ParseDelimitedValues(CurrentJob.SourcePaths);
+    private bool CanAdvanceCurrentStep => CurrentStep switch
+    {
+        1 => !string.IsNullOrWhiteSpace(CurrentJob.Name) && ParsedSourcePaths.Count > 0,
+        2 => CurrentJob.RetentionCount > 0,
+        _ => true
+    };
+    private bool CanSaveJob => !string.IsNullOrWhiteSpace(CurrentJob.Name) && ParsedSourcePaths.Count > 0 && CurrentJob.RetentionCount > 0;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ReloadDataAsync();
+        ResetForm();
+    }
+
+    private async Task ReloadDataAsync()
+    {
+        DbContext.ChangeTracker.Clear();
+
+        BackupJobsList = await DbContext.BackupJobs
+            .AsNoTracking()
+            .Include(j => j.Destinations)
+            .OrderBy(j => j.Name)
+            .ToListAsync();
+
+        AvailableDestinations = await DbContext.StorageDestinations
+            .AsNoTracking()
+            .Where(d => d.IsActive)
+            .OrderBy(d => d.Name)
+            .ToListAsync();
+    }
+
+    private void ResetForm()
+    {
+        CurrentJob = new BackupJob
+        {
+            RetentionCount = 5,
+            Versioning = VersioningType.Full,
+            Compression = CompressionType.None,
+            IsActive = true
+        };
+        SelectedDestIds.Clear();
+        CurrentStep = 1;
+        SelectedScheduleMode = "Manual";
+        ScheduleMinute = 0;
+        ScheduleHour = 0;
+        ScheduleTime = "00:00";
+        ScheduleDayOfWeek = 1;
+        ScheduleDayOfMonth = 1;
+        CurrentJob.CronExpression = string.Empty;
+        RefreshSchedulePreview();
+    }
+
+    private void OpenCreateDialog()
+    {
+        ResetForm();
+        IsJobDialogOpen = true;
+    }
+
+    private async Task OpenEditDialog(BackupJob job)
+    {
+        await ReloadDataAsync();
+
+        CurrentJob = new BackupJob
+        {
+            Id = job.Id,
+            Name = job.Name,
+            SourcePaths = job.SourcePaths,
+            FileFilters = job.FileFilters,
+            Compression = job.Compression,
+            Versioning = job.Versioning,
+            CronExpression = job.CronExpression,
+            RetentionCount = job.RetentionCount,
+            IsActive = job.IsActive,
+            LastRun = job.LastRun,
+            NextRun = job.NextRun
+        };
+
+        SelectedDestIds = new HashSet<int>(job.Destinations.Select(d => d.Id));
+        LoadScheduleBuilderFromCron(CurrentJob.CronExpression);
+        CurrentStep = 1;
+        IsJobDialogOpen = true;
+    }
+
+    private void CloseDialog()
+    {
+        IsJobDialogOpen = false;
+        ResetForm();
+    }
+
+    private void GoToStep(int step)
+    {
+        if (step <= CurrentStep)
+        {
+            CurrentStep = step;
+            return;
+        }
+
+        if (CanAdvanceCurrentStep)
+        {
+            CurrentStep = step;
+        }
+    }
+
+    private void NextStep()
+    {
+        if (CanAdvanceCurrentStep && CurrentStep < 3)
+        {
+            CurrentStep++;
+        }
+    }
+
+    private void PreviousStep()
+    {
+        if (CurrentStep > 1)
+        {
+            CurrentStep--;
+        }
+    }
+
+    private void ToggleDestination(int destId, object? checkedValue)
+    {
+        var isChecked = checkedValue is bool val && val;
+        if (isChecked)
+        {
+            SelectedDestIds.Add(destId);
+        }
+        else
+        {
+            SelectedDestIds.Remove(destId);
+        }
+    }
+
+    private async Task SaveJobAsync()
+    {
+        if (!CanSaveJob)
+        {
+            return;
+        }
+
+        var destinations = await DbContext.StorageDestinations
+            .Where(d => SelectedDestIds.Contains(d.Id))
+            .ToListAsync();
+
+        if (CurrentJob.Id == 0)
+        {
+            CurrentJob.SourcePaths = string.Join(';', ParsedSourcePaths);
+            CurrentJob.Destinations = destinations;
+            DbContext.BackupJobs.Add(CurrentJob);
+        }
+        else
+        {
+            var dbJob = await DbContext.BackupJobs
+                .Include(j => j.Destinations)
+                .FirstOrDefaultAsync(j => j.Id == CurrentJob.Id);
+
+            if (dbJob == null)
+            {
+                return;
+            }
+
+            dbJob.Name = CurrentJob.Name;
+            dbJob.SourcePaths = string.Join(';', ParsedSourcePaths);
+            dbJob.FileFilters = CurrentJob.FileFilters;
+            dbJob.Compression = CurrentJob.Compression;
+            dbJob.Versioning = CurrentJob.Versioning;
+            dbJob.CronExpression = CurrentJob.CronExpression;
+            dbJob.RetentionCount = CurrentJob.RetentionCount;
+            dbJob.IsActive = CurrentJob.IsActive;
+
+            dbJob.Destinations.Clear();
+            foreach (var dest in destinations)
+            {
+                dbJob.Destinations.Add(dest);
+            }
+        }
+
+        await DbContext.SaveChangesAsync();
+        await ReloadDataAsync();
+        CloseDialog();
+    }
+
+    private async Task DeleteJobAsync(int id)
+    {
+        var dbJob = await DbContext.BackupJobs.FindAsync(id);
+        if (dbJob == null)
+        {
+            return;
+        }
+
+        DbContext.BackupJobs.Remove(dbJob);
+        await DbContext.SaveChangesAsync();
+        await ReloadDataAsync();
+
+        if (CurrentJob.Id == id)
+        {
+            ResetForm();
+        }
+    }
+
+    private void OpenFolderPicker()
+    {
+        IsFolderPickerOpen = true;
+    }
+
+    private void HandleFolderSelected(string path)
+    {
+        var values = ParseDelimitedValues(CurrentJob.SourcePaths);
+        if (!values.Contains(path, StringComparer.OrdinalIgnoreCase))
+        {
+            values.Add(path);
+            CurrentJob.SourcePaths = string.Join(';', values);
+        }
+    }
+
+    private static List<string> ParseDelimitedValues(string? value) => value?
+        .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Where(path => !string.IsNullOrWhiteSpace(path))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToList() ?? new List<string>();
+
+    private static string GetSourceCountLabel(string sourcePaths)
+    {
+        var count = ParseDelimitedValues(sourcePaths).Count;
+        return count == 1 ? "1 kaynak" : $"{count} kaynak";
+    }
+
+    private static string GetDestinationCountLabel(int count) => count == 0 ? "Hedef yok" : count == 1 ? "1 hedef" : $"{count} hedef";
+
+    private static string GetScheduleSummary(string? cronExpression)
+    {
+        if (string.IsNullOrWhiteSpace(cronExpression))
+        {
+            return "Manuel tetikleme ile çalışır.";
+        }
+
+        var parts = cronExpression.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length != 5)
+        {
+            return $"Özel cron: {cronExpression}";
+        }
+
+        if (parts[1] == "*" && parts[2] == "*" && parts[3] == "*" && parts[4] == "*")
+        {
+            return $"Her saat {parts[0].PadLeft(2, '0')}. dakikada";
+        }
+
+        if (parts[2] == "*" && parts[3] == "*" && parts[4] == "*")
+        {
+            return $"Her gün {parts[1].PadLeft(2, '0')}:{parts[0].PadLeft(2, '0')}";
+        }
+
+        if (parts[2] == "*" && parts[3] == "*")
+        {
+            return $"Haftalık, {GetDayOfWeekLabel(parts[4])} {parts[1].PadLeft(2, '0')}:{parts[0].PadLeft(2, '0')}";
+        }
+
+        if (parts[3] == "*" && parts[4] == "*")
+        {
+            return $"Aylık, her ayın {parts[2]}. günü {parts[1].PadLeft(2, '0')}:{parts[0].PadLeft(2, '0')}";
+        }
+
+        return $"Özel cron: {cronExpression}";
+    }
+
+    private static string GetVersioningLabel(VersioningType versioning) => versioning == VersioningType.Full ? "Tam Yedek" : "Artımlı Yedek";
+
+    private static string GetVersioningDescription(VersioningType versioning) => versioning == VersioningType.Full
+        ? "Her çalıştırmada bağımsız bir imaj üretir. Geri yükleme daha basit, depolama kullanımı daha yüksektir."
+        : "İlk tam yedekten sonra sadece değişiklikleri saklar. Depolama verimli, zincir bağımlılığı vardır.";
+
+    private static string GetCompressionLabel(CompressionType compression) => compression switch
+    {
+        CompressionType.None => "Ham VHD",
+        CompressionType.Zip => "Zip Arşivi",
+        CompressionType.Gzip => "GZip",
+        CompressionType.Deflate => "Deflate",
+        _ => compression.ToString()
+    };
+
+    private static string GetCompressionDescription(CompressionType compression) => compression switch
+    {
+        CompressionType.None => "Maksimum uyumluluk ve hızlı erişim sunar.",
+        CompressionType.Zip => "Arşivleme ve paylaşım için dengeli seçenektir.",
+        CompressionType.Gzip => "Tek akışlı sıkıştırma ile daha küçük çıktı üretir.",
+        CompressionType.Deflate => "Hafif ve hızlı sıkıştırma sağlar.",
+        _ => string.Empty
+    };
+
+    private static string GetDestinationPreview(StorageDestination destination)
+    {
+        if (!string.IsNullOrWhiteSpace(destination.PathOrFolder))
+        {
+            return destination.PathOrFolder;
+        }
+
+        if (!string.IsNullOrWhiteSpace(destination.Host))
+        {
+            return $"{destination.Host}:{destination.Port}";
+        }
+
+        return "Bağlantı bilgisi bekleniyor";
+    }
+
+    private void SetScheduleMode(ChangeEventArgs args)
+    {
+        SelectedScheduleMode = args.Value?.ToString() ?? "Manual";
+        SyncCronExpression();
+    }
+
+    private void ApplyScheduleModePreset(string mode)
+    {
+        SelectedScheduleMode = mode;
+        SyncCronExpression();
+    }
+
+    private void SetScheduleMinute(ChangeEventArgs args)
+    {
+        ScheduleMinute = ParseBoundedInt(args.Value?.ToString(), 0, 59, ScheduleMinute);
+        ScheduleTime = $"{ScheduleHour:D2}:{ScheduleMinute:D2}";
+        SyncCronExpression();
+    }
+
+    private void SetScheduleHour(ChangeEventArgs args)
+    {
+        ScheduleHour = ParseBoundedInt(args.Value?.ToString(), 0, 23, ScheduleHour);
+        ScheduleTime = $"{ScheduleHour:D2}:{ScheduleMinute:D2}";
+        SyncCronExpression();
+    }
+
+    private void SetScheduleTime(ChangeEventArgs args)
+    {
+        var raw = args.Value?.ToString();
+        if (!TimeOnly.TryParse(raw, out var parsed))
+        {
+            return;
+        }
+
+        ScheduleHour = parsed.Hour;
+        ScheduleMinute = parsed.Minute;
+        ScheduleTime = $"{ScheduleHour:D2}:{ScheduleMinute:D2}";
+        SyncCronExpression();
+    }
+
+    private void SetScheduleDayOfWeek(ChangeEventArgs args)
+    {
+        ScheduleDayOfWeek = ParseBoundedInt(args.Value?.ToString(), 0, 6, ScheduleDayOfWeek);
+        SyncCronExpression();
+    }
+
+    private void SetScheduleDayOfMonth(ChangeEventArgs args)
+    {
+        ScheduleDayOfMonth = ParseBoundedInt(args.Value?.ToString(), 1, 28, ScheduleDayOfMonth);
+        SyncCronExpression();
+    }
+
+    private void SetCustomCronExpression(ChangeEventArgs args)
+    {
+        CurrentJob.CronExpression = args.Value?.ToString() ?? string.Empty;
+        if (SelectedScheduleMode != "Custom")
+        {
+            LoadScheduleBuilderFromCron(CurrentJob.CronExpression);
+            if (!string.IsNullOrWhiteSpace(CurrentJob.CronExpression) && SelectedScheduleMode != "Manual")
+            {
+                return;
+            }
+        }
+
+        SelectedScheduleMode = string.IsNullOrWhiteSpace(CurrentJob.CronExpression) ? "Manual" : "Custom";
+        RefreshSchedulePreview();
+    }
+
+    private void SyncCronExpression()
+    {
+        CurrentJob.CronExpression = SelectedScheduleMode switch
+        {
+            "Manual" => string.Empty,
+            "Hourly" => $"{ScheduleMinute} * * * *",
+            "Daily" => $"{ScheduleMinute} {ScheduleHour} * * *",
+            "Weekly" => $"{ScheduleMinute} {ScheduleHour} * * {ScheduleDayOfWeek}",
+            "Monthly" => $"{ScheduleMinute} {ScheduleHour} {ScheduleDayOfMonth} * *",
+            _ => CurrentJob.CronExpression
+        };
+
+        RefreshSchedulePreview();
+    }
+
+    private void LoadScheduleBuilderFromCron(string? cronExpression)
+    {
+        if (string.IsNullOrWhiteSpace(cronExpression))
+        {
+            SelectedScheduleMode = "Manual";
+            ScheduleMinute = 0;
+            ScheduleHour = 0;
+            ScheduleTime = "00:00";
+            ScheduleDayOfWeek = 1;
+            ScheduleDayOfMonth = 1;
+            RefreshSchedulePreview();
+            return;
+        }
+
+        var parts = cronExpression.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length != 5)
+        {
+            SelectedScheduleMode = "Custom";
+            RefreshSchedulePreview();
+            return;
+        }
+
+        ScheduleMinute = ParseBoundedInt(parts[0], 0, 59, 0);
+        ScheduleHour = ParseBoundedInt(parts[1], 0, 23, 0);
+        ScheduleTime = $"{ScheduleHour:D2}:{ScheduleMinute:D2}";
+        ScheduleDayOfMonth = ParseBoundedInt(parts[2], 1, 28, 1);
+        ScheduleDayOfWeek = ParseBoundedInt(parts[4], 0, 6, 1);
+
+        if (parts[1] == "*" && parts[2] == "*" && parts[3] == "*" && parts[4] == "*")
+        {
+            SelectedScheduleMode = "Hourly";
+            RefreshSchedulePreview();
+            return;
+        }
+
+        if (parts[2] == "*" && parts[3] == "*" && parts[4] == "*")
+        {
+            SelectedScheduleMode = "Daily";
+            RefreshSchedulePreview();
+            return;
+        }
+
+        if (parts[2] == "*" && parts[3] == "*")
+        {
+            SelectedScheduleMode = "Weekly";
+            RefreshSchedulePreview();
+            return;
+        }
+
+        if (parts[3] == "*" && parts[4] == "*")
+        {
+            SelectedScheduleMode = "Monthly";
+            RefreshSchedulePreview();
+            return;
+        }
+
+        SelectedScheduleMode = "Custom";
+        RefreshSchedulePreview();
+    }
+
+    private static string GetScheduleModeHint(string mode) => mode switch
+    {
+        "Manual" => "Bu görev sadece manuel tetiklenir, otomatik çalışmaz.",
+        "Hourly" => "Her saat seçilen dakikada bir kez çalışır.",
+        "Daily" => "Her gün seçilen saatte bir kez çalışır.",
+        "Weekly" => "Her hafta seçilen gün ve saatte çalışır.",
+        "Monthly" => "Her ay seçilen gün ve saatte çalışır.",
+        "Custom" => "Cron ifadesini kendiniz yönetirsiniz. Geçerli 5 alanlı cron beklenir.",
+        _ => "Zamanlama modu seçin."
+    };
+
+    private void RefreshSchedulePreview()
+    {
+        UpcomingRuns.Clear();
+
+        if (string.IsNullOrWhiteSpace(CurrentJob.CronExpression))
+        {
+            CronValidationMessage = "Manuel mod seçili. Otomatik çalışma planlanmaz.";
+            return;
+        }
+
+        try
+        {
+            var expression = CronExpression.Parse(CurrentJob.CronExpression, CronFormat.Standard);
+            var cursorUtc = DateTime.UtcNow;
+
+            for (var i = 0; i < 3; i++)
+            {
+                var nextUtc = expression.GetNextOccurrence(cursorUtc, TimeZoneInfo.Local);
+                if (nextUtc is null)
+                {
+                    break;
+                }
+
+                var nextLocal = nextUtc.Value.ToLocalTime();
+                UpcomingRuns.Add(nextLocal.ToString("dd.MM.yyyy dddd HH:mm", new System.Globalization.CultureInfo("tr-TR")));
+                cursorUtc = nextUtc.Value.AddSeconds(1);
+            }
+
+            CronValidationMessage = UpcomingRuns.Count == 0
+                ? "Bu cron için ileriye dönük zaman bulunamadı."
+                : "";
+        }
+        catch (CronFormatException)
+        {
+            CronValidationMessage = "Cron ifadesi geçersiz. Örnek: 0 12 * * *";
+        }
+    }
+
+    private static int ParseBoundedInt(string? rawValue, int min, int max, int fallback)
+    {
+        if (!int.TryParse(rawValue, out var parsed))
+        {
+            return fallback;
+        }
+
+        return Math.Clamp(parsed, min, max);
+    }
+
+    private static string GetDayOfWeekLabel(string rawValue)
+    {
+        if (!int.TryParse(rawValue, out var dayOfWeek))
+        {
+            return rawValue;
+        }
+
+        return DayOfWeekOptions.FirstOrDefault(option => option.Value == dayOfWeek).Label ?? rawValue;
+    }
+}

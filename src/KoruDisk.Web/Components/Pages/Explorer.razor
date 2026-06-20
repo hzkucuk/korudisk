@@ -1,0 +1,281 @@
+@page "/explorer"
+@using KoruDisk.Core.Models
+@using KoruDisk.Core.Entities
+@using KoruDisk.Core.Interfaces
+@using KoruDisk.Infrastructure.Data
+@using Microsoft.EntityFrameworkCore
+@inject IDiskImageService DiskImageService
+@inject KoruDiskDbContext DbContext
+
+<PageTitle>KoruDisk - İmaj Gezgini</PageTitle>
+
+<h1>İmaj Gezgini</h1>
+<p class="subtitle">Mevcut yedeklerinizin (.vhd, .iso) içeriğini görüntüleyin ve dosyaları çıkartın.</p>
+
+<div class="glass-panel" style="margin-bottom: 24px;">
+    <h3 style="font-weight: 700; margin-bottom: 15px;">İmaj Seçin</h3>
+    
+    <div style="display: flex; gap: 15px; align-items: flex-end;">
+        <div class="form-group" style="flex: 1; margin-bottom: 0;">
+            <label class="form-label">İmaj Dosya Yolu</label>
+            <input type="text" class="form-control" @bind="ImagePath" placeholder="/Users/username/Backups/backup.vhd" style="font-family: monospace;" />
+        </div>
+        <button class="btn btn-primary" @onclick="OpenImageAsync" disabled="@IsLoading">
+            @if (IsLoading)
+            {
+                <span>Yükleniyor...</span>
+            }
+            else
+            {
+                <span>İmajı Aç</span>
+            }
+        </button>
+    </div>
+
+    @if (!string.IsNullOrEmpty(ErrorMessage))
+    {
+        <div style="color: var(--accent-danger); font-size: 0.9rem; margin-top: 10px;">
+            @ErrorMessage
+        </div>
+    }
+
+    <!-- Son Başarılı Yedekler Kısayolu -->
+    @if (RecentSuccessfulBackups.Count > 0)
+    {
+        <div style="margin-top: 15px;">
+            <span style="font-size: 0.85rem; color: var(--text-secondary); margin-right: 10px;">Son Yedeklerden Seç:</span>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 5px;">
+                @foreach (var hist in RecentSuccessfulBackups)
+                {
+                    <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.8rem;" @onclick="() => LoadRecentBackup(hist.ImagePath)">
+                        @($"{hist.JobName} (v{hist.VersionNumber})")
+                    </button>
+                }
+            </div>
+        </div>
+    }
+</div>
+
+@if (RootNodes != null && RootNodes.Count > 0)
+{
+    <div class="explorer-container">
+        <!-- Sol Dizin Ağacı -->
+        <div class="explorer-tree">
+            <h4 style="font-size: 0.85rem; text-transform: uppercase; color: var(--text-secondary); margin-bottom: 15px; letter-spacing: 1px;">Klasörler</h4>
+            <ul style="list-style: none; padding-left: 0;">
+                <li>
+                    <div class="tree-node @(ActiveNode == null ? "active" : "")" @onclick="SelectRoot">
+                        <svg viewBox="0 0 24 24" style="width: 16px; height: 16px; fill: var(--accent-purple);"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/></svg>
+                        <span>[KÖK DIZIN]</span>
+                    </div>
+                    @RenderTree(RootNodes, 1)
+                </li>
+            </ul>
+        </div>
+
+        <!-- Sağ Klasör İçeriği -->
+        <div class="explorer-files">
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-light); padding-bottom: 15px; margin-bottom: 15px;">
+                <div>
+                    <h4 style="font-weight: 700; color: var(--text-primary);">
+                        @(ActiveNode == null ? "/" : ActiveNode.FullPath)
+                    </h4>
+                    <span style="font-size: 0.85rem; color: var(--text-secondary);">
+                        @CurrentDirectoryItems.Count nesne listeleniyor
+                    </span>
+                </div>
+            </div>
+
+            <div style="flex: 1; overflow-y: auto;">
+                @if (CurrentDirectoryItems.Count == 0)
+                {
+                    <div style="color: var(--text-muted); text-align: center; padding: 100px 0;">
+                        Klasör boş.
+                    </div>
+                }
+                else
+                {
+                    <table class="custom-table" style="margin-top: 0;">
+                        <thead>
+                            <tr>
+                                <th>Adı</th>
+                                <th>Boyut</th>
+                                <th>Değiştirme Tarihi</th>
+                                <th style="text-align: right;">İşlem</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var item in CurrentDirectoryItems)
+                            {
+                                <tr class="file-row" @onclick="() => HandleItemClick(item)">
+                                    <td>
+                                        <div style="display: flex; align-items: center; gap: 10px;">
+                                            @if (item.IsDirectory)
+                                            {
+                                                <svg style="width: 20px; height: 20px; fill: var(--accent-cyan);" viewBox="0 0 24 24">
+                                                    <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
+                                                </svg>
+                                            }
+                                            else
+                                            {
+                                                <svg style="width: 20px; height: 20px; fill: var(--text-secondary);" viewBox="0 0 24 24">
+                                                    <path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/>
+                                                </svg>
+                                            }
+                                            <span>@item.Name</span>
+                                        </div>
+                                    </td>
+                                    <td>@(item.IsDirectory ? "-" : FormatBytes(item.Size))</td>
+                                    <td>@(item.LastWriteTime?.ToString("dd.MM.yyyy HH:mm") ?? "-")</td>
+                                    <td style="text-align: right;">
+                                        @if (!item.IsDirectory)
+                                        {
+                                            <a href="/api/download-from-image?imagePath=@(Uri.EscapeDataString(ImagePath))&virtualPath=@(Uri.EscapeDataString(item.FullPath))" 
+                                               class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.8rem; text-decoration: none;" download>
+                                                İndir
+                                            </a>
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                }
+            </div>
+        </div>
+    </div>
+}
+else if (HasLoaded && (RootNodes == null || RootNodes.Count == 0))
+{
+    <div class="glass-panel" style="text-align: center; padding: 50px;">
+        <span style="color: var(--text-secondary);">İmaj içeriği boş veya okunamadı.</span>
+    </div>
+}
+
+@code {
+    private string ImagePath { get; set; } = string.Empty;
+    private List<VirtualFileNode>? RootNodes { get; set; }
+    private VirtualFileNode? ActiveNode { get; set; }
+    private List<VirtualFileNode> CurrentDirectoryItems { get; set; } = new();
+    private List<BackupHistory> RecentSuccessfulBackups { get; set; } = new();
+    private bool IsLoading { get; set; }
+    private bool HasLoaded { get; set; }
+    private string? ErrorMessage { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        RecentSuccessfulBackups = await DbContext.BackupHistories
+            .Where(h => h.Status == "Success" && (h.ImagePath.EndsWith(".vhd") || h.ImagePath.EndsWith(".iso")))
+            .OrderByDescending(h => h.Timestamp)
+            .Take(4)
+            .ToListAsync();
+    }
+
+    private void LoadRecentBackup(string path)
+    {
+        ImagePath = path;
+        _ = OpenImageAsync();
+    }
+
+    private async Task OpenImageAsync()
+    {
+        if (string.IsNullOrWhiteSpace(ImagePath))
+        {
+            ErrorMessage = "Lütfen geçerli bir imaj dosya yolu belirtin.";
+            return;
+        }
+
+        IsLoading = true;
+        ErrorMessage = null;
+        StateHasChanged();
+
+        try
+        {
+            RootNodes = await DiskImageService.GetImageContentAsync(ImagePath);
+            ActiveNode = null; // Kök dizine dön
+            UpdateCurrentDirectoryItems();
+            HasLoaded = true;
+        }
+        catch (Exception ex)
+        {
+            ErrorMessage = $"İmaj açılamadı: {ex.Message}";
+            RootNodes = null;
+        }
+        finally
+        {
+            IsLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private void SelectRoot()
+    {
+        ActiveNode = null;
+        UpdateCurrentDirectoryItems();
+    }
+
+    private void SelectNode(VirtualFileNode node)
+    {
+        ActiveNode = node;
+        UpdateCurrentDirectoryItems();
+    }
+
+    private void HandleItemClick(VirtualFileNode item)
+    {
+        if (item.IsDirectory)
+        {
+            ActiveNode = item;
+            UpdateCurrentDirectoryItems();
+        }
+    }
+
+    private void UpdateCurrentDirectoryItems()
+    {
+        if (ActiveNode == null)
+        {
+            // Kök dizindeki dosyalar
+            CurrentDirectoryItems = RootNodes ?? new List<VirtualFileNode>();
+        }
+        else
+        {
+            CurrentDirectoryItems = ActiveNode.Children;
+        }
+    }
+
+    private string FormatBytes(long bytes)
+    {
+        string[] suffix = { "B", "KB", "MB", "GB", "TB" };
+        int i;
+        double dblBytes = bytes;
+        for (i = 0; i < suffix.Length && bytes >= 1024; i++, bytes /= 1024)
+        {
+            dblBytes = bytes / 1024.0;
+        }
+        return $"{dblBytes:0.##} {suffix[i]}";
+    }
+
+    // Klasör ağacını özyinelemeli (recursive) çizen RenderFragment
+    RenderFragment RenderTree(List<VirtualFileNode> nodes, int level) => __builder =>
+    {
+        var dirs = nodes.Where(n => n.IsDirectory).OrderBy(n => n.Name).ToList();
+        if (dirs.Count > 0)
+        {
+            <ul style="list-style: none; padding-left: 14px; margin-top: 4px; border-left: 1px dashed var(--border-light);">
+                @foreach (var node in dirs)
+                {
+                    var isSelected = ActiveNode == node;
+                    <li>
+                        <div class="tree-node @(isSelected ? "active" : "")" @onclick="() => SelectNode(node)">
+                            <svg viewBox="0 0 24 24" style="width: 14px; height: 14px; fill: var(--accent-cyan);"><path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
+                            <span>@node.Name</span>
+                        </div>
+                        @if (node.Children.Any(c => c.IsDirectory))
+                        {
+                            @RenderTree(node.Children, level + 1)
+                        }
+                    </li>
+                }
+            </ul>
+        }
+    };
+}

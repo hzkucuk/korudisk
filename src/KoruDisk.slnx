@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="KoruDisk.Core/KoruDisk.Core.csproj" />
+  <Project Path="KoruDisk.Infrastructure/KoruDisk.Infrastructure.csproj" />
+  <Project Path="KoruDisk.Tests/KoruDisk.Tests.csproj" />
+  <Project Path="KoruDisk.Web/KoruDisk.Web.csproj" />
+</Solution>

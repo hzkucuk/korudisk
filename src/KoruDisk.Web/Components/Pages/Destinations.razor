@@ -1,0 +1,363 @@
+@page "/destinations"
+@using KoruDisk.Core.Entities
+@using KoruDisk.Core.Enums
+@using KoruDisk.Core.Interfaces
+@using KoruDisk.Infrastructure.Data
+@using KoruDisk.Web.Components.Shared
+@using Microsoft.EntityFrameworkCore
+@inject KoruDiskDbContext DbContext
+@inject IEnumerable<IStorageTarget> StorageTargets
+
+<PageTitle>KoruDisk - Yedek Hedefleri</PageTitle>
+
+<h1>Yedek Hedefleri</h1>
+<p class="subtitle">Yedek dosyalarının gönderileceği depolama konumlarını (Yerel Ağ, SFTP, FTP, Google Drive) yönetin.</p>
+
+<div class="grid-2">
+    <!-- Hedef Listesi -->
+    <div class="glass-panel">
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 20px;">
+            <h3 style="font-weight: 700;">Kaydetmiş Konumlar</h3>
+            <button class="btn btn-primary" style="padding: 10px 16px;" @onclick="OpenCreateDialog">Yeni Hedef</button>
+        </div>
+
+        @if (StorageDestinations.Count == 0)
+        {
+            <div style="color: var(--text-muted); text-align: center; padding: 50px 0;">
+                Kayıtlı hedef bulunmuyor. Yeni bir hedef tanımlayabilirsiniz.
+            </div>
+        }
+        else
+        {
+            <div style="display: flex; flex-direction: column; gap: 12px;">
+                @foreach (var dest in StorageDestinations)
+                {
+                    <div style="padding: 16px; background: rgba(255,255,255,0.02); border: 1px solid var(--border-light); border-radius: var(--radius-md); display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <span style="font-weight: 600; font-size: 1.05rem;">@dest.Name</span>
+                                <span class="badge badge-info">@dest.Type.ToString()</span>
+                            </div>
+                            <div style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 4px; font-family: monospace;">
+                                @(dest.Type == DestinationType.LocalOrNetwork ? dest.PathOrFolder : $"{dest.Host}:{dest.Port}")
+                            </div>
+                        </div>
+
+                        <div style="display: flex; gap: 10px;">
+                            <button class="btn btn-secondary" style="padding: 8px 12px; font-size: 0.8rem;" @onclick="() => OpenEditDialog(dest)">Düzenle</button>
+                            <button class="btn btn-danger" style="padding: 8px 12px; font-size: 0.8rem;" @onclick="() => DeleteDestAsync(dest.Id)">Sil</button>
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+    </div>
+
+    <div class="glass-panel" style="display: flex; flex-direction: column; justify-content: center; align-items: flex-start; min-height: 240px; gap: 12px;">
+        <h3 style="font-weight: 700;">Yönlendirmeli Hedef Oluşturma</h3>
+        <p style="color: var(--text-secondary); max-width: 420px; line-height: 1.6;">
+            Yeni hedefleri artık diyalog üzerinden adım adım tanımlayabilirsiniz. Yerel klasör seçiminde klasör gezgini açılır, uzak hedeflerde ise sadece ilgili alanlar gösterilir.
+        </p>
+        <button class="btn btn-primary" @onclick="OpenCreateDialog">Hedef Tanımlama Diyaloğunu Aç</button>
+    </div>
+</div>
+
+@if (IsDestinationDialogOpen)
+{
+    <div class="modal-overlay">
+        <div class="glass-panel modal-card" style="width: 760px; max-width: 94vw; max-height: 88vh; display: flex; flex-direction: column;">
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 20px; border-bottom: 1px solid var(--border-light); padding-bottom: 15px;">
+                <div>
+                    <h3 style="font-weight: 700; font-size: 1.2rem;">@(CurrentDest.Id == 0 ? "Yeni Hedef Ekle" : "Hedefi Düzenle")</h3>
+                    <p style="margin-top: 6px; color: var(--text-secondary); font-size: 0.9rem;">Hedef tipini seçin, ardından sadece o tipe uygun alanları doldurun.</p>
+                </div>
+                <button class="btn btn-secondary" style="padding: 8px 12px;" @onclick="CloseDialog">Kapat</button>
+            </div>
+
+            <EditForm Model="CurrentDest" OnValidSubmit="SaveDestAsync">
+                <div style="display: flex; flex-direction: column; gap: 16px; overflow-y: auto; padding-right: 6px;">
+                    <div class="grid-2" style="gap: 16px;">
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label class="form-label">Hedef Adı</label>
+                            <input type="text" class="form-control" @bind-value="CurrentDest.Name" required placeholder="örn: NAS Cihazım, SFTP Sunucusu" />
+                        </div>
+
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label class="form-label">Hedef Türü</label>
+                            <select class="form-control" @bind="CurrentDest.Type" @bind:after="OnDestinationTypeChangedAsync">
+                                <option value="LocalOrNetwork">Yerel Dizin / Ağ Paylaşımı (SMB)</option>
+                                <option value="Ftp">FTP Sunucusu</option>
+                                <option value="Sftp">SFTP Sunucusu</option>
+                                <option value="GoogleDrive">Google Drive</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div style="padding: 14px 16px; border-radius: var(--radius-md); border: 1px solid var(--border-light); background: rgba(255,255,255,0.03); color: var(--text-secondary); line-height: 1.6; font-size: 0.9rem;">
+                        @GetDestinationTypeDescription(CurrentDest.Type)
+                    </div>
+
+                    @if (CurrentDest.Type == DestinationType.LocalOrNetwork)
+                    {
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label class="form-label">Yedekleme Klasörü</label>
+                            <div style="display: flex; gap: 10px;">
+                                <input type="text" class="form-control" @bind-value="CurrentDest.PathOrFolder" required placeholder="örn: /Users/username/Backups veya \\192.168.1.50\Backups" />
+                                <button type="button" class="btn btn-secondary" style="padding: 10px 15px; white-space: nowrap;" @onclick="OpenFolderPicker">Klasör Seç...</button>
+                            </div>
+                        </div>
+                    }
+                    else if (CurrentDest.Type == DestinationType.Ftp || CurrentDest.Type == DestinationType.Sftp)
+                    {
+                        <div class="grid-2" style="gap: 16px;">
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label class="form-label">Sunucu IP / Host</label>
+                                <input type="text" class="form-control" @bind-value="CurrentDest.Host" required placeholder="örn: 192.168.1.100 veya ftp.sunucu.com" />
+                            </div>
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label class="form-label">Port</label>
+                                <input type="number" class="form-control" @bind-value="CurrentDest.Port" required />
+                            </div>
+                        </div>
+
+                        <div class="grid-2" style="gap: 16px;">
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label class="form-label">Kullanıcı Adı</label>
+                                <input type="text" class="form-control" @bind-value="CurrentDest.Username" required />
+                            </div>
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label class="form-label">Şifre</label>
+                                <input type="password" class="form-control" @bind-value="CurrentDest.Password" required />
+                            </div>
+                        </div>
+
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label class="form-label">Uzak Klasör Yolu</label>
+                            <input type="text" class="form-control" @bind-value="CurrentDest.PathOrFolder" placeholder="örn: /backups/korudisk (boş bırakılırsa kök dizin)" />
+                        </div>
+                    }
+                    else if (CurrentDest.Type == DestinationType.GoogleDrive)
+                    {
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label class="form-label">Google Drive Klasör ID</label>
+                            <input type="text" class="form-control" @bind-value="CurrentDest.PathOrFolder" placeholder="örn: 1a2b3c4d5e... (Boş bırakılırsa ana dizin)" />
+                        </div>
+                        
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label class="form-label">Google Service Account Credential JSON</label>
+                            <textarea class="form-control" @bind="CurrentDest.GoogleCredentialJson" rows="8" placeholder='{ "type": "service_account", "project_id": ... }' style="font-family: monospace; font-size: 0.8rem;"></textarea>
+                        </div>
+                    }
+
+                    @if (TestResult != null)
+                    {
+                        <div style="padding: 12px; border-radius: var(--radius-md); background: @(TestSuccess ? "rgba(16,185,129,0.1)" : "rgba(239,68,68,0.1)"); border: 1px solid @(TestSuccess ? "var(--accent-emerald)" : "var(--accent-danger)"); color: @(TestSuccess ? "var(--accent-emerald)" : "var(--accent-danger)"); font-size: 0.9rem;">
+                            @TestResult
+                        </div>
+                    }
+                </div>
+
+                <div style="display: flex; gap: 12px; margin-top: 25px; justify-content: flex-end; border-top: 1px solid var(--border-light); padding-top: 15px;">
+                    <button type="button" class="btn btn-secondary" @onclick="CloseDialog">Vazgeç</button>
+                    <button type="button" class="btn btn-secondary" style="border-color: var(--accent-cyan); color: var(--accent-cyan);" @onclick="TestConnectionAsync" disabled="@IsTesting">
+                        @if (IsTesting)
+                        {
+                            <span>Test Ediliyor...</span>
+                        }
+                        else
+                        {
+                            <span>Bağlantıyı Test Et</span>
+                        }
+                    </button>
+                    <button type="submit" class="btn btn-primary">Kaydet</button>
+                </div>
+            </EditForm>
+        </div>
+    </div>
+}
+
+<LocalFolderPicker @bind-IsOpen="IsFolderPickerOpen" OnFolderSelected="HandleFolderSelected" />
+
+@code {
+    private List<StorageDestination> StorageDestinations { get; set; } = new();
+    private StorageDestination CurrentDest { get; set; } = new();
+
+    private bool IsTesting { get; set; }
+    private bool IsDestinationDialogOpen { get; set; }
+    private bool IsFolderPickerOpen { get; set; }
+    private bool TestSuccess { get; set; }
+    private string? TestResult { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDestinationsAsync();
+        ResetForm();
+    }
+
+    private async Task LoadDestinationsAsync()
+    {
+        StorageDestinations = await DbContext.StorageDestinations.ToListAsync();
+    }
+
+    private void ResetForm()
+    {
+        CurrentDest = new StorageDestination
+        {
+            Type = DestinationType.LocalOrNetwork,
+            Port = 21 // Varsayılan FTP portu
+        };
+        TestResult = null;
+    }
+
+    private void OpenCreateDialog()
+    {
+        ResetForm();
+        IsDestinationDialogOpen = true;
+    }
+
+    private void OpenEditDialog(StorageDestination dest)
+    {
+        CurrentDest = new StorageDestination
+        {
+            Id = dest.Id,
+            Name = dest.Name,
+            Type = dest.Type,
+            PathOrFolder = dest.PathOrFolder,
+            Host = dest.Host,
+            Port = dest.Port,
+            Username = dest.Username,
+            Password = dest.Password,
+            GoogleCredentialJson = dest.GoogleCredentialJson,
+            IsActive = dest.IsActive
+        };
+        TestResult = null;
+        IsDestinationDialogOpen = true;
+    }
+
+    private void CloseDialog()
+    {
+        IsDestinationDialogOpen = false;
+        IsFolderPickerOpen = false;
+        ResetForm();
+    }
+
+    private async Task SaveDestAsync()
+    {
+        if (CurrentDest.Id == 0)
+        {
+            DbContext.StorageDestinations.Add(CurrentDest);
+        }
+        else
+        {
+            var dbDest = await DbContext.StorageDestinations.FindAsync(CurrentDest.Id);
+            if (dbDest != null)
+            {
+                dbDest.Name = CurrentDest.Name;
+                dbDest.Type = CurrentDest.Type;
+                dbDest.PathOrFolder = CurrentDest.PathOrFolder;
+                dbDest.Host = CurrentDest.Host;
+                dbDest.Port = CurrentDest.Port;
+                dbDest.Username = CurrentDest.Username;
+                dbDest.Password = CurrentDest.Password;
+                dbDest.GoogleCredentialJson = CurrentDest.GoogleCredentialJson;
+                dbDest.IsActive = CurrentDest.IsActive;
+            }
+        }
+
+        await DbContext.SaveChangesAsync();
+        await LoadDestinationsAsync();
+        CloseDialog();
+    }
+
+    private async Task DeleteDestAsync(int id)
+    {
+        var dbDest = await DbContext.StorageDestinations.FindAsync(id);
+        if (dbDest != null)
+        {
+            DbContext.StorageDestinations.Remove(dbDest);
+            await DbContext.SaveChangesAsync();
+            await LoadDestinationsAsync();
+            if (CurrentDest.Id == id)
+            {
+                ResetForm();
+            }
+        }
+    }
+
+    private async Task TestConnectionAsync()
+    {
+        IsTesting = true;
+        TestResult = null;
+        StateHasChanged();
+
+        try
+        {
+            var targetAdapter = StorageTargets.FirstOrDefault(t => t.Type == CurrentDest.Type);
+            if (targetAdapter == null)
+            {
+                TestSuccess = false;
+                TestResult = $"Hata: '{CurrentDest.Type}' hedef adaptörü bulunamadı.";
+                return;
+            }
+
+            // Port ayarlaması (kullanıcı değiştirmemişse varsayılana çek)
+            if (CurrentDest.Type == DestinationType.Sftp && CurrentDest.Port == 21)
+            {
+                CurrentDest.Port = 22;
+            }
+
+            var result = await targetAdapter.TestConnectionAsync(CurrentDest);
+            TestSuccess = result.Success;
+            TestResult = result.Message;
+        }
+        catch (Exception ex)
+        {
+            TestSuccess = false;
+            TestResult = $"Bağlantı testi sırasında beklenmeyen hata: {ex.Message}";
+        }
+        finally
+        {
+            IsTesting = false;
+            StateHasChanged();
+        }
+    }
+
+    private Task OnDestinationTypeChangedAsync()
+    {
+        TestResult = null;
+
+        if (CurrentDest.Type == DestinationType.Sftp && (CurrentDest.Port == 0 || CurrentDest.Port == 21))
+        {
+            CurrentDest.Port = 22;
+        }
+        else if (CurrentDest.Type == DestinationType.Ftp && CurrentDest.Port == 22)
+        {
+            CurrentDest.Port = 21;
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private void OpenFolderPicker()
+    {
+        IsFolderPickerOpen = true;
+    }
+
+    private void HandleFolderSelected(string path)
+    {
+        CurrentDest.PathOrFolder = path;
+        TestResult = null;
+    }
+
+    private static string GetDestinationTypeDescription(DestinationType destinationType)
+    {
+        return destinationType switch
+        {
+            DestinationType.LocalOrNetwork => "Yedek dosyaları bu makinedeki bir klasöre veya ağ paylaşımına doğrudan kopyalanır. Klasör seçici ile hedef yolu seçebilirsiniz.",
+            DestinationType.Ftp => "FTP hedefi, oluşan imajı kullanıcı adı ve şifre ile bir FTP sunucusuna yükler. Uzak klasör boş bırakılırsa kök dizin kullanılır.",
+            DestinationType.Sftp => "SFTP hedefi, SSH tabanlı güvenli dosya aktarımı yapar. Varsayılan port 22'dir ve uzak klasör yolunu ayrıca belirleyebilirsiniz.",
+            DestinationType.GoogleDrive => "Google Drive hedefi, service account credential JSON ile yetkilendirilir ve dosyayı seçilen klasör ID'sine yükler.",
+            _ => string.Empty
+        };
+    }
+}

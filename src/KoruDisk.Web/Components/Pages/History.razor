@@ -1,0 +1,532 @@
+@page "/history"
+@using KoruDisk.Core.Entities
+@using KoruDisk.Core.Interfaces
+@using KoruDisk.Infrastructure.Data
+@using KoruDisk.Web.Components.Shared
+@using Microsoft.EntityFrameworkCore
+@implements IDisposable
+@inject KoruDiskDbContext DbContext
+@inject IBackupService BackupService
+
+<PageTitle>KoruDisk - Yedekleme Geçmişi</PageTitle>
+
+<h1>Yedekleme Geçmişi</h1>
+<p class="subtitle">Sistemde alınmış tüm yedekleme kayıtlarını inceleyin ve geri yükleme işlemlerini yönetin.</p>
+
+<div class="glass-panel">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+        <h3 style="font-weight: 700;">Yedekleme Kayıtları</h3>
+        <button class="btn btn-secondary" style="padding: 8px 16px;" @onclick="LoadHistoryAsync">Listeyi Yenile</button>
+    </div>
+
+    @if (Histories.Count == 0)
+    {
+        <div style="color: var(--text-muted); text-align: center; padding: 60px 0;">
+            Kayıtlı yedekleme geçmişi bulunmuyor.
+        </div>
+    }
+    else
+    {
+        <table class="custom-table">
+            <thead>
+                <tr>
+                    <th>Görev Adı</th>
+                    <th>Sürüm</th>
+                    <th>Tarih</th>
+                    <th>Boyut</th>
+                    <th>İmaj Dosyası</th>
+                    <th>Durum</th>
+                    <th>Bütünlük</th>
+                    <th style="text-align: right;">İşlem</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var hist in Histories)
+                {
+                    <tr>
+                        <td style="font-weight: 600;">@hist.JobName</td>
+                        <td>@($"v{hist.VersionNumber}")</td>
+                        <td>@hist.Timestamp.ToLocalTime().ToString("dd.MM.yyyy HH:mm")</td>
+                        <td>@FormatBytes(hist.SizeInBytes)</td>
+                        <td style="font-family: monospace; font-size: 0.8rem; max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="@hist.ImagePath">
+                            @Path.GetFileName(hist.ImagePath)
+                        </td>
+                        <td>
+                            @if (hist.Status == "Success")
+                                {
+                                    <span class="badge badge-success">Başarılı</span>
+                                }
+                                else if (hist.Status == "Failed")
+                                {
+                                    <span class="badge badge-danger">Hata</span>
+                                }
+                                else
+                                {
+                                    <span class="badge badge-warning">Çalışıyor</span>
+                                }
+                        </td>
+                        <td>
+                            <span class="badge @GetIntegrityBadgeCss(hist)">@GetIntegrityBadgeText(hist)</span>
+                            @if (hist.IntegrityCheckedAtUtc.HasValue)
+                            {
+                                <div style="margin-top: 6px; font-size: 0.72rem; color: var(--text-muted);">
+                                    @hist.IntegrityCheckedAtUtc.Value.ToLocalTime().ToString("dd.MM.yyyy HH:mm")
+                                </div>
+                            }
+                        </td>
+                        <td style="text-align: right;">
+                            <div style="display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap;">
+                                <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.8rem;" @onclick="() => OpenLogsAsync(hist)">Logları Gör</button>
+                                @if (hist.Status == "Success" && File.Exists(hist.ImagePath))
+                                {
+                                    <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.8rem;" disabled="@IsVerifyingHistory(hist.Id)" @onclick="() => VerifyIntegrityAsync(hist)">
+                                        @(IsVerifyingHistory(hist.Id) ? "Doğrulanıyor..." : "Bütünlüğü Doğrula")
+                                    </button>
+                                }
+                                @if (hist.Status == "Success" && File.Exists(hist.ImagePath))
+                                {
+                                    <button class="btn btn-primary" style="padding: 6px 12px; font-size: 0.8rem;" @onclick="() => StartRestore(hist)">Geri Yükle</button>
+                                }
+                            </div>
+                            @if (!string.IsNullOrWhiteSpace(GetIntegrityResultText(hist.Id)))
+                            {
+                                <div style="margin-top: 8px; font-size: 0.78rem; color: @GetIntegrityResultColor(hist.Id);">
+                                    @GetIntegrityResultText(hist.Id)
+                                </div>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</div>
+
+@if (IsLogDialogOpen && SelectedHistoryForLogs != null)
+{
+    <div class="modal-overlay">
+        <div class="glass-panel modal-card" style="width: 900px; max-width: 92vw; max-height: 85vh; display: flex; flex-direction: column;">
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 18px; border-bottom: 1px solid var(--border-light); padding-bottom: 14px;">
+                <div>
+                    <h3 style="font-weight: 700; font-size: 1.2rem; margin-bottom: 6px;">@SelectedHistoryForLogs.JobName @($"- v{SelectedHistoryForLogs.VersionNumber}")</h3>
+                    <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; color: var(--text-secondary); font-size: 0.85rem;">
+                        <span>@SelectedHistoryForLogs.Timestamp.ToLocalTime().ToString("dd.MM.yyyy HH:mm:ss")</span>
+                        @if (SelectedHistoryForLogs.Status == "Success")
+                        {
+                            <span class="badge badge-success">Başarılı</span>
+                        }
+                        else if (SelectedHistoryForLogs.Status == "Failed")
+                        {
+                            <span class="badge badge-danger">Hata</span>
+                        }
+                        else
+                        {
+                            <span class="badge badge-warning">Çalışıyor</span>
+                        }
+                    </div>
+                </div>
+                <div style="display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end;">
+                    <a class="btn btn-secondary" style="padding: 8px 12px; text-decoration: none;" href="@GetLogExportUrl("txt")" download>TXT İndir</a>
+                    <a class="btn btn-secondary" style="padding: 8px 12px; text-decoration: none;" href="@GetLogExportUrl("json")" download>JSON İndir</a>
+                    @if (SelectedHistoryForLogs.Status == "Success" && File.Exists(SelectedHistoryForLogs.ImagePath))
+                    {
+                        <button class="btn btn-secondary" style="padding: 8px 12px;" disabled="@IsVerifyingHistory(SelectedHistoryForLogs.Id)" @onclick="VerifySelectedHistoryIntegrityAsync">
+                            @(IsVerifyingHistory(SelectedHistoryForLogs.Id) ? "Doğrulanıyor..." : "Bütünlüğü Doğrula")
+                        </button>
+                    }
+                    <button class="btn btn-secondary" style="padding: 8px 12px;" @onclick="RefreshSelectedHistoryAsync">Yenile</button>
+                    <button class="btn btn-secondary" style="padding: 8px 12px;" @onclick="CloseLogsDialog">Kapat</button>
+                </div>
+            </div>
+
+            <div class="grid-2" style="gap: 16px; margin-bottom: 16px;">
+                <div style="padding: 14px; border: 1px solid var(--border-light); border-radius: var(--radius-md); background: rgba(255,255,255,0.03);">
+                    <div style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-muted); margin-bottom: 6px;">İmaj Dosyası</div>
+                    <div style="font-family: monospace; font-size: 0.85rem; color: var(--text-primary); word-break: break-all;">@SelectedHistoryForLogs.ImagePath</div>
+                </div>
+                <div style="padding: 14px; border: 1px solid var(--border-light); border-radius: var(--radius-md); background: rgba(255,255,255,0.03);">
+                    <div style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-muted); margin-bottom: 6px;">Hata Özeti</div>
+                    <div style="font-size: 0.9rem; color: @(string.IsNullOrWhiteSpace(SelectedHistoryForLogs.ErrorMessage) ? "var(--text-secondary)" : "var(--accent-danger)");">
+                        @(string.IsNullOrWhiteSpace(SelectedHistoryForLogs.ErrorMessage) ? "Hata kaydı yok." : SelectedHistoryForLogs.ErrorMessage)
+                    </div>
+                </div>
+            </div>
+
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px;">
+                <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                    <span style="font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px;">Log Filtresi</span>
+                    @foreach (var filter in LogFilters)
+                    {
+                        <button
+                            type="button"
+                            class="btn @(SelectedLogFilter == filter ? "btn-primary" : "btn-secondary")"
+                            style="padding: 6px 10px; font-size: 0.78rem;"
+                            @onclick="() => SetLogFilter(filter)">@GetLogFilterLabel(filter)</button>
+                    }
+                </div>
+                <div style="font-size: 0.8rem; color: var(--text-secondary);">
+                    @FilteredHistoryLogs.Count gösteriliyor / @SelectedHistoryLogs.Count toplam kayıt
+                </div>
+            </div>
+
+            <div class="console-box" style="height: 420px;">
+                @if (IsLogLoading)
+                {
+                    <div class="console-line Info">Loglar yükleniyor...</div>
+                }
+                else if (FilteredHistoryLogs.Count == 0)
+                {
+                    <div class="console-line Info">Seçili filtre için kayıt bulunmuyor.</div>
+                }
+                else
+                {
+                    @foreach (var log in FilteredHistoryLogs)
+                    {
+                        <div class="console-line @log.Level">[@log.Timestamp.ToLocalTime().ToString("HH:mm:ss")] [@log.Level] @log.Message</div>
+                    }
+                }
+            </div>
+        </div>
+    </div>
+}
+
+<!-- Geri Yükleme Durum Paneli -->
+@if (SelectedHistoryForRestore != null && IsRestoreRunning)
+{
+    <div class="glass-panel" style="margin-top: 24px; border-color: var(--accent-cyan); box-shadow: var(--shadow-glow);">
+        <h3 style="font-weight: 700; margin-bottom: 10px; color: var(--accent-cyan);">Geri Yükleniyor...</h3>
+        <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 20px;">
+            Yedek <strong>@($"v{SelectedHistoryForRestore.VersionNumber}")</strong> sürümü, <strong>@RestoreTargetFolder</strong> klasörüne çıkartılıyor.
+        </p>
+
+        <div class="console-box" style="height: 250px;">
+            @foreach (var log in RestoreLogs)
+            {
+                <div class="console-line Info">@log</div>
+            }
+        </div>
+    </div>
+}
+
+<!-- Klasör Seçici Bileşeni -->
+<LocalFolderPicker @bind-IsOpen="IsFolderPickerOpen" OnFolderSelected="HandleFolderSelectedForRestore" />
+
+@code {
+    private List<BackupHistory> Histories { get; set; } = new();
+    private BackupHistory? SelectedHistoryForRestore { get; set; }
+    private string RestoreTargetFolder { get; set; } = string.Empty;
+    private BackupHistory? SelectedHistoryForLogs { get; set; }
+    private List<BackupLog> SelectedHistoryLogs { get; set; } = new();
+    private static readonly string[] LogFilters = ["All", "Info", "Warning", "Error"];
+
+    private bool IsFolderPickerOpen { get; set; }
+    private bool IsRestoreRunning { get; set; }
+    private bool IsLogDialogOpen { get; set; }
+    private bool IsLogLoading { get; set; }
+    private List<string> RestoreLogs { get; set; } = new();
+    private HashSet<int> VerifyingHistoryIds { get; set; } = new();
+    private Dictionary<int, string> IntegrityResults { get; set; } = new();
+    private Dictionary<int, bool> IntegrityResultStatus { get; set; } = new();
+    private CancellationTokenSource? LogPollingCts { get; set; }
+    private string SelectedLogFilter { get; set; } = "All";
+
+    private List<BackupLog> FilteredHistoryLogs => SelectedHistoryLogs
+        .Where(log => SelectedLogFilter == "All" || string.Equals(log.Level, SelectedLogFilter, StringComparison.OrdinalIgnoreCase))
+        .ToList();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadHistoryAsync();
+    }
+
+    private async Task LoadHistoryAsync()
+    {
+        DbContext.ChangeTracker.Clear();
+
+        Histories = await DbContext.BackupHistories
+            .AsNoTracking()
+            .OrderByDescending(h => h.Timestamp)
+            .ToListAsync();
+    }
+
+    private async Task OpenLogsAsync(BackupHistory history)
+    {
+        SelectedHistoryForLogs = history;
+        IsLogDialogOpen = true;
+        await RefreshSelectedHistoryAsync();
+        if (SelectedHistoryForLogs?.Status == "Running")
+        {
+            StartLogPolling();
+        }
+    }
+
+    private async Task RefreshSelectedHistoryAsync()
+    {
+        if (SelectedHistoryForLogs == null)
+        {
+            return;
+        }
+
+        IsLogLoading = true;
+        StateHasChanged();
+
+        await LoadHistoryAsync();
+
+        var selectedId = SelectedHistoryForLogs.Id;
+        SelectedHistoryForLogs = Histories.FirstOrDefault(history => history.Id == selectedId);
+        SelectedHistoryLogs = await DbContext.BackupLogs
+            .AsNoTracking()
+            .Where(log => log.BackupHistoryId == selectedId)
+            .OrderBy(log => log.Timestamp)
+            .ToListAsync();
+
+        IsLogLoading = false;
+
+        if (SelectedHistoryForLogs?.Status == "Running")
+        {
+            StartLogPolling();
+        }
+        else
+        {
+            StopLogPolling();
+        }
+
+        StateHasChanged();
+    }
+
+    private void StartLogPolling()
+    {
+        if (SelectedHistoryForLogs == null)
+        {
+            return;
+        }
+
+        if (LogPollingCts != null)
+        {
+            return;
+        }
+
+        LogPollingCts = new CancellationTokenSource();
+        var token = LogPollingCts.Token;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                while (!token.IsCancellationRequested)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(2), token);
+                    if (token.IsCancellationRequested || !IsLogDialogOpen)
+                    {
+                        break;
+                    }
+
+                    await InvokeAsync(RefreshSelectedHistoryAsync);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }, token);
+    }
+
+    private void StopLogPolling()
+    {
+        LogPollingCts?.Cancel();
+        LogPollingCts?.Dispose();
+        LogPollingCts = null;
+    }
+
+    private void CloseLogsDialog()
+    {
+        StopLogPolling();
+        IsLogDialogOpen = false;
+        IsLogLoading = false;
+        SelectedLogFilter = "All";
+        SelectedHistoryForLogs = null;
+        SelectedHistoryLogs.Clear();
+    }
+
+    private void SetLogFilter(string filter)
+    {
+        SelectedLogFilter = filter;
+    }
+
+    private static string GetLogFilterLabel(string filter) => filter switch
+    {
+        "All" => "Tümü",
+        "Info" => "Bilgi",
+        "Warning" => "Uyarı",
+        "Error" => "Hata",
+        _ => filter
+    };
+
+    private string GetLogExportUrl(string format)
+    {
+        if (SelectedHistoryForLogs == null)
+        {
+            return "#";
+        }
+
+        return $"/api/export-backup-logs?historyId={SelectedHistoryForLogs.Id}&format={Uri.EscapeDataString(format)}";
+    }
+
+    private void StartRestore(BackupHistory history)
+    {
+        SelectedHistoryForRestore = history;
+        IsFolderPickerOpen = true;
+    }
+
+    private bool IsVerifyingHistory(int historyId) => VerifyingHistoryIds.Contains(historyId);
+
+    private string? GetIntegrityResultText(int historyId)
+    {
+        return IntegrityResults.TryGetValue(historyId, out var message) ? message : null;
+    }
+
+    private string GetIntegrityResultColor(int historyId)
+    {
+        if (!IntegrityResultStatus.TryGetValue(historyId, out var isSuccess))
+        {
+            return "var(--text-secondary)";
+        }
+
+        return isSuccess ? "var(--accent-success)" : "var(--accent-danger)";
+    }
+
+    private async Task VerifySelectedHistoryIntegrityAsync()
+    {
+        if (SelectedHistoryForLogs == null)
+        {
+            return;
+        }
+
+        await VerifyIntegrityAsync(SelectedHistoryForLogs);
+        await RefreshSelectedHistoryAsync();
+    }
+
+    private async Task VerifyIntegrityAsync(BackupHistory history)
+    {
+        if (IsVerifyingHistory(history.Id))
+        {
+            return;
+        }
+
+        VerifyingHistoryIds.Add(history.Id);
+        IntegrityResults[history.Id] = "Bütünlük doğrulaması başlatıldı...";
+        IntegrityResultStatus.Remove(history.Id);
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var logLines = new List<string>();
+            await BackupService.VerifyBackupIntegrityAsync(history, (level, message) =>
+            {
+                var line = $"[{DateTime.Now:HH:mm:ss}] [{level}] {message}";
+                logLines.Add(line);
+            });
+
+            IntegrityResultStatus[history.Id] = true;
+            IntegrityResults[history.Id] = "Bütünlük doğrulaması başarılı.";
+
+            if (logLines.Count > 0)
+            {
+                IntegrityResults[history.Id] = logLines[^1];
+            }
+        }
+        catch (Exception ex)
+        {
+            IntegrityResultStatus[history.Id] = false;
+            IntegrityResults[history.Id] = $"Doğrulama başarısız: {ex.Message}";
+        }
+        finally
+        {
+            VerifyingHistoryIds.Remove(history.Id);
+            await LoadHistoryAsync();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private static string GetIntegrityBadgeText(BackupHistory history)
+    {
+        return history.IntegrityStatus switch
+        {
+            "Verified" => "Doğrulandı",
+            "Failed" => "Bozuk",
+            "NotAvailable" => "Dosya Yok",
+            _ => "Bekliyor"
+        };
+    }
+
+    private static string GetIntegrityBadgeCss(BackupHistory history)
+    {
+        return history.IntegrityStatus switch
+        {
+            "Verified" => "badge-success",
+            "Failed" => "badge-danger",
+            "NotAvailable" => "badge-warning",
+            _ => "badge-warning"
+        };
+    }
+
+    private void HandleFolderSelectedForRestore(string path)
+    {
+        RestoreTargetFolder = path;
+        if (SelectedHistoryForRestore != null && !string.IsNullOrEmpty(RestoreTargetFolder))
+        {
+            _ = ExecuteRestoreAsync();
+        }
+    }
+
+    private async Task ExecuteRestoreAsync()
+    {
+        IsRestoreRunning = true;
+        RestoreLogs.Clear();
+        StateHasChanged();
+
+        var history = SelectedHistoryForRestore;
+        if (history == null) return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await BackupService.RestoreBackupAsync(history, RestoreTargetFolder, (level, msg) =>
+                {
+                    var timestamp = DateTime.Now.ToString("HH:mm:ss");
+                    RestoreLogs.Add($"[{timestamp}] {msg}");
+                    InvokeAsync(StateHasChanged);
+                });
+            }
+            catch (Exception ex)
+            {
+                RestoreLogs.Add($"[HATA] Geri yükleme sırasında hata: {ex.Message}");
+            }
+            finally
+            {
+                // İşlem sonu durumunu ekle ve 5 sn sonra paneli temizle
+                RestoreLogs.Add("--- Geri yükleme işlemi sonlandı ---");
+                await InvokeAsync(StateHasChanged);
+            }
+        });
+
+        await Task.Delay(200);
+    }
+
+    private string FormatBytes(long bytes)
+    {
+        string[] suffix = { "B", "KB", "MB", "GB", "TB" };
+        int i;
+        double dblBytes = bytes;
+        for (i = 0; i < suffix.Length && bytes >= 1024; i++, bytes /= 1024)
+        {
+            dblBytes = bytes / 1024.0;
+        }
+        return $"{dblBytes:0.##} {suffix[i]}";
+    }
+
+    public void Dispose()
+    {
+        StopLogPolling();
+    }
+}
